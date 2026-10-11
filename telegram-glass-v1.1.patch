@@ -728,7 +728,7 @@ index fcd1abc..f4b183d 100644
          int chatListIndex = contentView.indexOfChild(chatListView);
          chatListIndex = chatListIndex < 0 ? contentView.getChildCount() : (chatListIndex + 1);
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
-index a8f9973..4ea66f2 100644
+index a8f9973..708117a 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
 @@ -2702,6 +2702,11 @@ public class ChatActivityEnterView extends FrameLayout implements
@@ -786,16 +786,17 @@ index a8f9973..4ea66f2 100644
              attachButton.setOnClickListener(v -> {
                  if (adjustPanLayoutHelper != null && adjustPanLayoutHelper.animationInProgress() || attachLayoutPaddingAlpha == 0f) {
                      return;
-@@ -5812,7 +5835,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -5812,7 +5835,8 @@ public class ChatActivityEnterView extends FrameLayout implements
          messageEditText.setMaxLines(6);
          messageEditText.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18);
          messageEditText.setGravity(Gravity.BOTTOM);
 -        messageEditText.setPadding(0, dp(9), 0, dp(10));
 +        messageEditText.setPadding(GLASS_SPLIT ? dp(13) : 0, dp(9), 0, dp(10)); // v10.4: text inset inside glass pill
++        if (GLASS_SPLIT) messageEditText.hintExtraX = dp(4); // v10.6: gap between caret and hint
          messageEditText.setBackgroundDrawable(null);
          messageEditText.setTextColor(getThemedColor(Theme.key_chat_messagePanelText));
          messageEditText.setLinkTextColor(getThemedColor(Theme.key_chat_messageLinkOut));
-@@ -6470,6 +6493,63 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -6470,6 +6494,63 @@ public class ChatActivityEnterView extends FrameLayout implements
  
      public static final int DEFAULT_HEIGHT = 44;
  
@@ -859,7 +860,7 @@ index a8f9973..4ea66f2 100644
      private boolean resizeForTopViewLastShow;
      private void resizeForTopView(boolean show) {
          if (resizeForTopViewLastShow == show) {
-@@ -8760,7 +8840,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -8760,7 +8841,7 @@ public class ChatActivityEnterView extends FrameLayout implements
          slowModeButton.setVisibility(visible ? VISIBLE : GONE);
          int padding = visible ? dp(slowModeButton.isPremiumMode ? 26 : 16) : 0;
          if (messageEditText != null && messageEditText.getPaddingRight() != padding) {
@@ -868,7 +869,7 @@ index a8f9973..4ea66f2 100644
          }
      }
  
-@@ -8790,6 +8870,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -8790,6 +8871,9 @@ public class ChatActivityEnterView extends FrameLayout implements
              }
          }
          layoutParams.rightMargin = Math.max(layoutParams.rightMargin, Math.max(0, sendButton.width() - dp(DEFAULT_HEIGHT)));
@@ -878,7 +879,7 @@ index a8f9973..4ea66f2 100644
          if (doneButton != null && doneButton.getVisibility() == VISIBLE) {
              layoutParams.rightMargin = Math.max(layoutParams.rightMargin, Math.max(0, doneButton.width() - dp(DEFAULT_HEIGHT)));
          }
-@@ -14780,7 +14863,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -14780,7 +14864,7 @@ public class ChatActivityEnterView extends FrameLayout implements
  
      private void updateMessageTextParams() {
          if (messageEditText != null) {
@@ -887,6 +888,39 @@ index a8f9973..4ea66f2 100644
          }
      }
  
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
+index 2d2b284..25a4d67 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
+@@ -768,6 +768,8 @@ public class EditTextBoldCursor extends EditTextEffects {
+     }
+ 
+     public int hintLayoutOffset;
++    /** Telegram Glass: extra x shift of the hint so the caret does not overlap its first letter */
++    public int hintExtraX;
+ 
+     private void drawHint(Canvas canvas) {
+         if (length() != 0 && !transformHintToHeader) {
+@@ -814,7 +816,10 @@ public class EditTextBoldCursor extends EditTextEffects {
+                 hintAnimatedDrawable.setRightPadding(0);
+             }
+             hintAnimatedDrawable.setAlpha((int) (Color.alpha(hintColor) * hintAlpha));
++            canvas.save();
++            canvas.translate(hintExtraX, 0); // Telegram Glass: hint starts after the caret
+             hintAnimatedDrawable.draw(canvas);
++            canvas.restore();
+         } else if (hintLayout != null && (hintVisible || hintAlpha != 0)) {
+             int oldColor = getPaint().getColor();
+ 
+@@ -829,7 +834,7 @@ public class EditTextBoldCursor extends EditTextEffects {
+                 float offset = getMeasuredWidth() - hintWidth;
+                 canvas.translate(hintLayoutX = left + getScrollX() + offset, hintLayoutY = lineY - hintLayout.getHeight() - dp(7));
+             } else {
+-                canvas.translate(hintLayoutX = left + getScrollX()+ hintLayoutOffset, hintLayoutY = lineY - hintLayout.getHeight() - AndroidUtilities.dp2(7));
++                canvas.translate(hintLayoutX = left + getScrollX()+ hintLayoutOffset + hintExtraX, hintLayoutY = lineY - hintLayout.getHeight() - AndroidUtilities.dp2(7));
+             }
+             if (transformHintToHeader) {
+                 float scale = 1.0f - 0.3f * headerAnimationProgress;
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ProfileActionsView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ProfileActionsView.java
 index ce74c41..541607f 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ProfileActionsView.java
@@ -2213,7 +2247,7 @@ index a3916cc..b1901d1 100644
                  }
                  if (!isRequestingFirebaseSms) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java
-index d21d71c..7067d48 100644
+index d21d71c..2da94be 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java
 @@ -102,6 +102,7 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
@@ -2316,7 +2350,7 @@ index d21d71c..7067d48 100644
 +                        String official = org.telegram.messenger.glass.GlassRelayService.findOfficialApp(mContext);
 +                        textCell.setText("Официальный Telegram должен быть установлен и вошедшим в этот же аккаунт"
 +                            + (official == null ? " (сейчас он не найден)" : "")
-+                            + ". Тогда Keep-alive service ниже можно выключить, чтобы экономить батарею.\n\nTelegram Glass v10.1");
++                            + ". Тогда Keep-alive service ниже можно выключить, чтобы экономить батарею.\n\n" + glassVersionLabel());
                      }
                      break;
                  }
@@ -2345,6 +2379,19 @@ index d21d71c..7067d48 100644
                  return 6;
              } else {
                  return 5;
+@@ -1271,4 +1315,12 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+         listView.setPadding(0, 0, 0, bottom);
+         listView.setClipToPadding(false);
+     }
++
++    private String glassVersionLabel() {
++        if (org.telegram.messenger.BuildVars.PUBLIC_BUILD) {
++            try { return getParentActivity().getPackageManager().getPackageInfo(getParentActivity().getPackageName(), 0).versionName; } catch (Throwable ignore) {}
++        }
++        return "Telegram Glass v10.6";
++    }
++
+ }
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
 index 1220c6f..f27a0c9 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java

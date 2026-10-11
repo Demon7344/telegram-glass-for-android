@@ -10,12 +10,16 @@
 
 ## 🇷🇺 Русский
 
-### Что нового в v1
+### Что нового в v1.1
+- Курсор больше не наезжает на подсказку «Сообщение»: подсказка начинается сразу после курсора, как в оригинальном Telegram.
+- В настройках уведомлений показывается правильная версия.
+
+### Что было в v1
 - Шейдер «жидкого стекла» (AGSL, Android 13+): настоящее преломление фона по краям, без размытия и цветной каймы — в меню, диалогах, нижних панелях, шапке чата и панели ввода.
 - Стекло без белых рамок, с мягкой градиентной подсветкой краёв (ярче сверху‑слева и снизу‑справа).
 - Профиль в стиле iOS: большое фото, крупные круглые стеклянные кнопки с подписями (звонок, видео, звук, поиск, ещё); в своём профиле — «Выбрать фото», «Изменить», «Настройки».
 - Раздельная панель ввода: круглая скрепка слева, капсула «Сообщение» со смайликом внутри, круглая кнопка микрофона/отправки справа. Скрепка видна и при наборе, и при редактировании.
-- Ретрансляция уведомлений через официальный Telegram: если официальное приложение установлено, Telegram Glass видит его уведомления, сам подгружает новые сообщения и показывает свои уведомления (надёжнее с v10.1: склейка, переподключение службы, wakelock).
+- Ретрансляция уведомлений через официальный Telegram: если официальное приложение установлено, Telegram Glass видит его уведомления, сам подгружает новые сообщения и показывает свои уведомления.
 - Ввод своих api_id / api_hash при первом запуске, смена в настройках.
 - Переключатель «Жидкое стекло» в Настройки → Энергосбережение.
 
@@ -29,7 +33,7 @@
 | Вход через Google, passkeys, покупки Google Play | да | **нет** |
 
 ### Установка и настройка — по шагам
-1. **Скачайте APK** со страницы [Releases](../../releases) (`telegram-glass-v1.apk`).
+1. **Скачайте APK** со страницы [Releases](../../releases) (`telegram-glass-v1.1.apk`).
 2. **Разрешите установку из неизвестных источников**: при открытии APK Android предложит разрешить установку для браузера/файлового менеджера → «Настройки» → включить «Разрешить из этого источника».
 3. **Play Protect** может показать предупреждение «Приложение не проверено» — нажмите «Подробнее» → «Всё равно установить». Это нормально для неофициальных сборок.
 4. **Получите api_id и api_hash**:
@@ -60,7 +64,11 @@
 
 ## 🇬🇧 English
 
-### What's in v1
+### What's new in v1.1
+- The caret no longer overlaps the "Message" hint: the hint starts right after the caret, like stock Telegram.
+- Correct version label in notification settings.
+
+### What was in v1
 - Liquid‑glass AGSL shader (Android 13+): real edge refraction, no blur, no chromatic fringe — menus, dialogs, sheets, chat header and input bar.
 - Rimless glass with a soft gradient edge highlight (brighter top‑left / bottom‑right).
 - iOS‑style profile: big photo, large round glass buttons with labels (call, video, mute, search, more); own profile: Set photo, Edit, Settings.
@@ -70,7 +78,7 @@
 - "Liquid glass" toggle in Settings → Power saving.
 
 ### Install & setup, step by step
-1. Download `telegram-glass-v1.apk` from [Releases](../../releases).
+1. Download `telegram-glass-v1.1.apk` from [Releases](../../releases).
 2. Allow installing from unknown sources for your browser / file manager when prompted.
 3. If Play Protect warns, tap "More details" → "Install anyway".
 4. Get api_id / api_hash: open https://my.telegram.org/apps, log in with your phone (the code arrives in Telegram), open "API development tools", fill in any app title, a 5–32 char short name, platform Android, press "Create application", copy **App api_id** and **App api_hash**.
@@ -90,11 +98,11 @@
 
 ## License / Source
 Based on [Telegram for Android](https://github.com/DrKLO/Telegram) (GNU GPL v2). The complete source changes are in
-[`telegram-glass-v1.patch`](telegram-glass-v1.patch), applied on top of upstream commit `f2908b1` ("update to 12.10.6 (7112)"):
+[`telegram-glass-v1.1.patch`](telegram-glass-v1.1.patch), applied on top of upstream commit `f2908b1` ("update to 12.10.6 (7112)"):
 
 ```
 git clone https://github.com/DrKLO/Telegram && cd Telegram && git checkout f2908b1
-git apply ../telegram-glass-v1.patch
+git apply ../telegram-glass-v1.1.patch
 ./gradlew :TMessagesProj_App:assembleAfatRelease
 ```
 No api credentials are included; users supply their own. This project is not affiliated with Telegram FZ‑LLC.
