@@ -728,7 +728,7 @@ index fcd1abc..f4b183d 100644
          int chatListIndex = contentView.indexOfChild(chatListView);
          chatListIndex = chatListIndex < 0 ? contentView.getChildCount() : (chatListIndex + 1);
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
-index a8f9973..708117a 100644
+index a8f9973..696dc68 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
 @@ -2702,6 +2702,11 @@ public class ChatActivityEnterView extends FrameLayout implements
@@ -792,7 +792,7 @@ index a8f9973..708117a 100644
          messageEditText.setGravity(Gravity.BOTTOM);
 -        messageEditText.setPadding(0, dp(9), 0, dp(10));
 +        messageEditText.setPadding(GLASS_SPLIT ? dp(13) : 0, dp(9), 0, dp(10)); // v10.4: text inset inside glass pill
-+        if (GLASS_SPLIT) messageEditText.hintExtraX = dp(4); // v10.6: gap between caret and hint
++        if (GLASS_SPLIT) messageEditText.hintExtraX = dp(9); // v10.7: hint drawn at paddingLeft + 9dp (caret is at paddingLeft, 2dp wide)
          messageEditText.setBackgroundDrawable(null);
          messageEditText.setTextColor(getThemedColor(Theme.key_chat_messagePanelText));
          messageEditText.setLinkTextColor(getThemedColor(Theme.key_chat_messageLinkOut));
@@ -889,7 +889,7 @@ index a8f9973..708117a 100644
      }
  
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
-index 2d2b284..25a4d67 100644
+index 2d2b284..0d04ee7 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
 @@ -768,6 +768,8 @@ public class EditTextBoldCursor extends EditTextEffects {
@@ -917,7 +917,7 @@ index 2d2b284..25a4d67 100644
                  canvas.translate(hintLayoutX = left + getScrollX() + offset, hintLayoutY = lineY - hintLayout.getHeight() - dp(7));
              } else {
 -                canvas.translate(hintLayoutX = left + getScrollX()+ hintLayoutOffset, hintLayoutY = lineY - hintLayout.getHeight() - AndroidUtilities.dp2(7));
-+                canvas.translate(hintLayoutX = left + getScrollX()+ hintLayoutOffset + hintExtraX, hintLayoutY = lineY - hintLayout.getHeight() - AndroidUtilities.dp2(7));
++                canvas.translate(hintLayoutX = left + getScrollX()+ hintLayoutOffset + (hintExtraX != 0 ? getPaddingLeft() + hintExtraX : 0), hintLayoutY = lineY - hintLayout.getHeight() - AndroidUtilities.dp2(7));
              }
              if (transformHintToHeader) {
                  float scale = 1.0f - 0.3f * headerAnimationProgress;
