@@ -10,6 +10,12 @@
 
 ## 🇷🇺 Русский
 
+### Что нового в v1.2
+- **Аватарка собеседника в шапке чата** вместо кнопки звонка — нажатие открывает профиль. Звонок перенесён в меню ⋮.
+- **Анимированные фоны профиля** на весь экран профиля (свечение + плавно движущийся узор, «стеклянные» полупрозрачные карточки) — 8 вариантов. Выбираются через «🎨 Фон профиля» в Настройках или кнопкой-палитрой в шапке профиля. Можно задать свой фон себе и отдельно каждому собеседнику. Хранится **только локально** — другие люди его не видят.
+- **Подсветка краёв стекла**: мягкий градиентный блик по краю стеклянных элементов, чтобы они отделялись от фона.
+- Мелкие исправления и обновлённый исходный патч.
+
 ### Что нового в v1.1
 - Курсор больше не наезжает на подсказку «Сообщение»: подсказка начинается сразу после курсора, как в оригинальном Telegram.
 - В настройках уведомлений показывается правильная версия.
@@ -33,7 +39,7 @@
 | Вход через Google, passkeys, покупки Google Play | да | **нет** |
 
 ### Установка и настройка — по шагам
-1. **Скачайте APK** со страницы [Releases](../../releases) (`telegram-glass-v1.1.apk`).
+1. **Скачайте APK** со страницы [Releases](../../releases) (`telegram-glass-v1.2.apk`).
 2. **Разрешите установку из неизвестных источников**: при открытии APK Android предложит разрешить установку для браузера/файлового менеджера → «Настройки» → включить «Разрешить из этого источника».
 3. **Play Protect** может показать предупреждение «Приложение не проверено» — нажмите «Подробнее» → «Всё равно установить». Это нормально для неофициальных сборок.
 4. **Получите api_id и api_hash**:
@@ -52,6 +58,7 @@
    4. Разрешите Telegram Glass показывать уведомления.
 9. **Отключите оптимизацию батареи**: Настройки Android → Приложения → Telegram Glass → Батарея → «Без ограничений». На Xiaomi/Huawei/Samsung также разрешите автозапуск и фоновую работу.
 10. Сменить api_id/api_hash позже: Настройки → Энергосбережение → строка «🔑 API ID / API Hash» внизу.
+11. **Фон профиля**: Настройки → строка «🎨 Фон профиля» (вверху, после аккаунтов) → выберите вариант или «Стандартный». Фон виден, когда вы открываете свой профиль (нажмите на свою аватарку). Для собеседника: откройте его профиль → кнопка-палитра справа вверху (рядом с ⋮) → выберите фон. Всё сохраняется сразу и видно только вам.
 
 ### Ограничения
 - Нет push через Firebase (FCM): уведомления — только фоновым соединением или через ретрансляцию официального Telegram.
@@ -63,6 +70,12 @@
 ---
 
 ## 🇬🇧 English
+
+### What's new in v1.2
+- **Peer avatar in the chat header** instead of the call button — tap opens the profile. Calls moved to the ⋮ menu.
+- **Animated profile backgrounds** covering the whole profile (glow + slowly moving pattern, translucent glass cards) — 8 options. Choose via "🎨 Фон профиля" (Profile background) in Settings or the palette button in a profile's header. You can set one for yourself and a separate one per contact. Stored **locally only** — nobody else sees it.
+- **Edge highlight on glass**: soft gradient rim on glass elements so they stand out from the background.
+- Minor fixes, updated source patch.
 
 ### What's new in v1.1
 - The caret no longer overlaps the "Message" hint: the hint starts right after the caret, like stock Telegram.
@@ -78,7 +91,7 @@
 - "Liquid glass" toggle in Settings → Power saving.
 
 ### Install & setup, step by step
-1. Download `telegram-glass-v1.1.apk` from [Releases](../../releases).
+1. Download `telegram-glass-v1.2.apk` from [Releases](../../releases).
 2. Allow installing from unknown sources for your browser / file manager when prompted.
 3. If Play Protect warns, tap "More details" → "Install anyway".
 4. Get api_id / api_hash: open https://my.telegram.org/apps, log in with your phone (the code arrives in Telegram), open "API development tools", fill in any app title, a 5–32 char short name, platform Android, press "Create application", copy **App api_id** and **App api_hash**.
@@ -88,6 +101,7 @@
 8. Notification relay: install the official Telegram (same account) → in Glass: Settings → Notifications → enable relay → grant Notification access. On Android 13+ you may need App info → ⋮ → "Allow restricted settings" first. Allow notifications for Glass.
 9. Disable battery optimization for Telegram Glass (Battery → Unrestricted; allow autostart on Xiaomi/Huawei/Samsung).
 10. Change api credentials later: Settings → Power saving → "🔑 API ID / API Hash" row.
+11. Profile background: Settings → "🎨 Фон профиля" row (near the top, after accounts) → pick one or "Стандартный" (default). It shows when you open your own profile (tap your avatar). For a contact: open their profile → palette button top‑right (next to ⋮) → pick. Saved instantly, visible only to you.
 
 ### Limitations
 - No Firebase (FCM) push; no Google sign‑in, passkeys or Google Play purchases.
@@ -98,11 +112,11 @@
 
 ## License / Source
 Based on [Telegram for Android](https://github.com/DrKLO/Telegram) (GNU GPL v2). The complete source changes are in
-[`telegram-glass-v1.1.patch`](telegram-glass-v1.1.patch), applied on top of upstream commit `f2908b1` ("update to 12.10.6 (7112)"):
+[`telegram-glass-v1.2.patch`](telegram-glass-v1.2.patch), applied on top of upstream commit `f2908b1` ("update to 12.10.6 (7112)"):
 
 ```
 git clone https://github.com/DrKLO/Telegram && cd Telegram && git checkout f2908b1
-git apply ../telegram-glass-v1.1.patch
+git apply ../telegram-glass-v1.2.patch
 ./gradlew :TMessagesProj_App:assembleAfatRelease
 ```
 No api credentials are included; users supply their own. This project is not affiliated with Telegram FZ‑LLC.

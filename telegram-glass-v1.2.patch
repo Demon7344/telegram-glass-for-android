@@ -1,0 +1,3426 @@
+diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
+index 85a9f84..6d3e825 100644
+--- a/TMessagesProj/build.gradle
++++ b/TMessagesProj/build.gradle
+@@ -143,6 +143,18 @@ android {
+         minSdkVersion 21
+         targetSdkVersion 36
+ 
++        // Telegram Glass: your own api_id / api_hash from https://my.telegram.org (API development tools).
++        // Pass with -PglassApiId=12345 -PglassApiHash=0123abcd... or put glassApiId/glassApiHash into
++        // ~/.gradle/gradle.properties. 0 / empty = use the defaults in BuildVars.java.
++        buildConfigField "int", "GLASS_API_ID", (project.findProperty("glassApiId") ?: "0").toString()
++        buildConfigField "String", "GLASS_API_HASH", "\"" + (project.findProperty("glassApiHash") ?: "").toString() + "\""
++
++        if (project.hasProperty("tgAbis")) {
++            ndk {
++                abiFilters(*(project.property("tgAbis").toString().split(",")))
++            }
++        }
++
+         vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
+ 
+         multiDexEnabled true
+@@ -152,6 +164,10 @@ android {
+                 version '3.22.1'
+                 arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-21' //, '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'
+                 targets 'tmessages.49'
++                if (project.hasProperty("tgNativeJobs")) {
++                    // limit parallel native compile jobs on low-memory machines
++                    arguments "-DCMAKE_JOB_POOLS=compile=${project.property("tgNativeJobs")};link=1", '-DCMAKE_JOB_POOL_COMPILE=compile', '-DCMAKE_JOB_POOL_LINK=link'
++                }
+             }
+         }
+     }
+diff --git a/TMessagesProj/config/release/AndroidManifest_SDK23.xml b/TMessagesProj/config/release/AndroidManifest_SDK23.xml
+index 4e250e0..5bbe133 100644
+--- a/TMessagesProj/config/release/AndroidManifest_SDK23.xml
++++ b/TMessagesProj/config/release/AndroidManifest_SDK23.xml
+@@ -30,7 +30,7 @@
+     <application
+         android:icon="@mipmap/ic_launcher"
+         android:roundIcon="@mipmap/ic_launcher_round"
+-        android:label="@string/AppName"
++        android:label="@string/AppNameGlass"
+         android:theme="@style/Theme.TMessages.Start"
+         android:hardwareAccelerated="true"
+         android:largeHeap="true"
+diff --git a/TMessagesProj/jni/third_party/boringssl b/TMessagesProj/jni/third_party/boringssl
+--- a/TMessagesProj/jni/third_party/boringssl
++++ b/TMessagesProj/jni/third_party/boringssl
+@@ -1 +1 @@
+-Subproject commit 2b44a3701a4788e1ef866ddc7f143060a3d196c9
++Subproject commit 2b44a3701a4788e1ef866ddc7f143060a3d196c9-dirty
+diff --git a/TMessagesProj/jni/third_party/libvpx b/TMessagesProj/jni/third_party/libvpx
+--- a/TMessagesProj/jni/third_party/libvpx
++++ b/TMessagesProj/jni/third_party/libvpx
+@@ -1 +1 @@
+-Subproject commit 1024874c5919305883187e2953de8fcb4c3d7fa6
++Subproject commit 1024874c5919305883187e2953de8fcb4c3d7fa6-dirty
+diff --git a/TMessagesProj/jni/third_party/openh264 b/TMessagesProj/jni/third_party/openh264
+--- a/TMessagesProj/jni/third_party/openh264
++++ b/TMessagesProj/jni/third_party/openh264
+@@ -1 +1 @@
+-Subproject commit 652bdb7719f30b52b08e506645a7322ff1b2cc6f
++Subproject commit 652bdb7719f30b52b08e506645a7322ff1b2cc6f-dirty
+diff --git a/TMessagesProj/src/main/AndroidManifest.xml b/TMessagesProj/src/main/AndroidManifest.xml
+index 6f6d377..82c2514 100644
+--- a/TMessagesProj/src/main/AndroidManifest.xml
++++ b/TMessagesProj/src/main/AndroidManifest.xml
+@@ -471,6 +471,15 @@
+             android:exported="true"
+             android:foregroundServiceType="mediaPlayback"
+         />
++        <service
++            android:name="org.telegram.messenger.glass.GlassRelayService"
++            android:label="Telegram Glass: уведомления через официальный Telegram"
++            android:exported="true"
++            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
++            <intent-filter>
++                <action android:name="android.service.notification.NotificationListenerService" />
++            </intent-filter>
++        </service>
+         <service
+             android:name=".NotificationsService"
+             android:enabled="true"
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+index 5405be7..5ed941d 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+@@ -193,6 +193,7 @@ public class ApplicationLoader extends Application {
+             return;
+         }
+         applicationInited = true;
++        AndroidUtilities.runOnUIThread(() -> { try { org.telegram.messenger.glass.GlassRelayService.ensureBound(applicationContext); } catch (Throwable ignore) {} }, 3000);
+         NativeLoader.initNativeLibs(ApplicationLoader.applicationContext);
+ 
+         try {
+@@ -287,6 +288,7 @@ public class ApplicationLoader extends Application {
+         } catch (Throwable ignore) {
+ 
+         }
++        if (applicationContext != null) BuildVars.loadCustomApi(applicationContext); // Telegram Glass: user-supplied api_id
+ 
+         super.onCreate();
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java b/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
+index 4ed7e64..ff904e7 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
+@@ -22,15 +22,45 @@ public class BuildVars {
+     public static boolean LOGS_ENABLED = BuildConfig.DEBUG_VERSION;
+     public static boolean DEBUG_PRIVATE_VERSION = BuildConfig.DEBUG_PRIVATE_VERSION;
+     public static boolean USE_CLOUD_STRINGS = true;
+-    public static boolean CHECK_UPDATES = true;
++    public static boolean CHECK_UPDATES = false; // Telegram Glass: never offer official Telegram updates over the fork
+     public static boolean NO_SCOPED_STORAGE = Build.VERSION.SDK_INT <= 29;
+     public static String BUILD_VERSION_STRING = BuildConfig.BUILD_VERSION_STRING;
+ 
+-    public static int APP_ID = 4;
+-    public static String APP_HASH = "014b35b6184100b085b0d0572f9b5103";
++    // ===================== Telegram Glass: API credentials =====================
++    // Telegram requires every third-party app to use ITS OWN api_id/api_hash:
++    //   https://my.telegram.org -> "API development tools" -> create application.
++    // Either replace DEFAULT_APP_ID/DEFAULT_APP_HASH below, or build with
++    //   ./gradlew -PglassApiId=12345 -PglassApiHash=0123456789abcdef0123456789abcdef ...
++    // The defaults (4 / 014b...) are the official Telegram for Android credentials shipped in the
++    // public repo; the server may restrict them for unofficial builds.
++    private static final int DEFAULT_APP_ID = 4;
++    private static final String DEFAULT_APP_HASH = "014b35b6184100b085b0d0572f9b5103";
++    public static int APP_ID = BuildConfig.GLASS_API_ID > 0 ? BuildConfig.GLASS_API_ID : DEFAULT_APP_ID;
++    public static String APP_HASH = BuildConfig.GLASS_API_ID > 0 && BuildConfig.GLASS_API_HASH != null && BuildConfig.GLASS_API_HASH.length() > 0 ? BuildConfig.GLASS_API_HASH : DEFAULT_APP_HASH;
++    /** Public build: no credentials baked in, the user enters their own api_id/api_hash. */
++    public static final boolean PUBLIC_BUILD = BuildConfig.GLASS_API_ID <= 0;
++    public static void loadCustomApi(android.content.Context ctx) {
++        try {
++            android.content.SharedPreferences sp = ctx.getSharedPreferences("glass_api", android.content.Context.MODE_PRIVATE);
++            int id = sp.getInt("api_id", 0);
++            String hash = sp.getString("api_hash", "");
++            if (id > 0 && hash != null && hash.length() >= 16) { APP_ID = id; APP_HASH = hash; }
++        } catch (Throwable ignore) {}
++    }
++    public static boolean hasCustomApi(android.content.Context ctx) {
++        android.content.SharedPreferences sp = ctx.getSharedPreferences("glass_api", android.content.Context.MODE_PRIVATE);
++        return sp.getInt("api_id", 0) > 0 && sp.getString("api_hash", "").length() >= 16;
++    }
++    public static boolean usesOwnApiId() {
++        return APP_ID != DEFAULT_APP_ID;
++    }
+ 
+     // SafetyNet key for Google Identity SDK, set it to empty to disable
+-    public static String SAFETYNET_KEY = "AIzaSyDqt8P-7F7CPCseMkOiVRgb1LY8RN1bvH8";
++    // Telegram Glass: disabled. Firebase SMS verification (SafetyNet / Play Integrity) is bound to the
++    // official package name + signature and can never succeed for this fork, so we don't advertise it
++    // (CodeSettings.allow_firebase = false) and the server sends a normal SMS / Telegram code instead.
++    public static String SAFETYNET_KEY = "";
++    public static final boolean FIREBASE_SMS_SUPPORTED = false;
+     public static String PLAYSTORE_APP_URL = "https://play.google.com/store/apps/details?id=org.telegram.messenger";
+     public static String HUAWEI_STORE_URL = "https://appgallery.huawei.com/app/C101184875";
+     public static String GOOGLE_AUTH_CLIENT_ID = "760348033671-81kmi3pi84p11ub8hp9a1funsv0rn2p9.apps.googleusercontent.com";
+@@ -41,7 +71,7 @@ public class BuildVars {
+     public static boolean IS_BILLING_UNAVAILABLE = false;
+ 
+     // works only on official app ids, disable on your forks
+-    public static boolean SUPPORTS_PASSKEYS = true;
++    public static boolean SUPPORTS_PASSKEYS = false; // Telegram Glass: fork app id
+ 
+     static {
+         if (ApplicationLoader.applicationContext != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ContactsController.java b/TMessagesProj/src/main/java/org/telegram/messenger/ContactsController.java
+index a350abf..01a5d22 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/ContactsController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/ContactsController.java
+@@ -391,7 +391,7 @@ public class ContactsController extends BaseController {
+         Utilities.globalQueue.postRunnable(() -> {
+             AccountManager am = AccountManager.get(ApplicationLoader.applicationContext);
+             try {
+-                Account[] accounts = am.getAccountsByType("org.telegram.messenger");
++                Account[] accounts = am.getAccountsByType(ApplicationLoader.applicationContext.getString(R.string.tg_account_type));
+                 for (int a = 0; a < accounts.length; a++) {
+                     Account acc = accounts[a];
+                     boolean found = false;
+@@ -423,7 +423,7 @@ public class ContactsController extends BaseController {
+                 readContacts();
+                 if (systemAccount == null) {
+                     try {
+-                        systemAccount = new Account("" + getUserConfig().getClientUserId(), "org.telegram.messenger");
++                        systemAccount = new Account("" + getUserConfig().getClientUserId(), ApplicationLoader.applicationContext.getString(R.string.tg_account_type));
+                         am.addAccountExplicitly(systemAccount, "", null);
+                     } catch (Exception ignore) {
+ 
+@@ -437,7 +437,7 @@ public class ContactsController extends BaseController {
+         try {
+             systemAccount = null;
+             AccountManager am = AccountManager.get(ApplicationLoader.applicationContext);
+-            Account[] accounts = am.getAccountsByType("org.telegram.messenger");
++            Account[] accounts = am.getAccountsByType(ApplicationLoader.applicationContext.getString(R.string.tg_account_type));
+             for (int a = 0; a < accounts.length; a++) {
+                 Account acc = accounts[a];
+                 boolean found = false;
+@@ -513,7 +513,7 @@ public class ContactsController extends BaseController {
+                 AndroidUtilities.runOnUIThread(() -> {
+                     AccountManager am = AccountManager.get(ApplicationLoader.applicationContext);
+                     try {
+-                        Account[] accounts = am.getAccountsByType("org.telegram.messenger");
++                        Account[] accounts = am.getAccountsByType(ApplicationLoader.applicationContext.getString(R.string.tg_account_type));
+                         systemAccount = null;
+                         for (int a = 0; a < accounts.length; a++) {
+                             Account acc = accounts[a];
+@@ -531,7 +531,7 @@ public class ContactsController extends BaseController {
+ 
+                     }
+                     try {
+-                        systemAccount = new Account("" + getUserConfig().getClientUserId(), "org.telegram.messenger");
++                        systemAccount = new Account("" + getUserConfig().getClientUserId(), ApplicationLoader.applicationContext.getString(R.string.tg_account_type));
+                         am.addAccountExplicitly(systemAccount, "", null);
+                     } catch (Exception ignore) {
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/LiteMode.java b/TMessagesProj/src/main/java/org/telegram/messenger/LiteMode.java
+index 6c37252..68af460 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/LiteMode.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/LiteMode.java
+@@ -42,7 +42,9 @@ public class LiteMode {
+     public static final int FLAG_CHAT_SCALE = 32768;
+     public static final int FLAG_CHAT_THANOS = 65536;
+     public static final int FLAG_LIQUID_GLASS = 1 << 18;
+-    public static final int FLAGS_CHAT = FLAG_CHAT_BACKGROUND | FLAG_CHAT_FORUM_TWOCOLUMN | FLAG_CHAT_SPOILER | FLAG_CHAT_BLUR | FLAG_CHAT_SCALE | FLAG_CHAT_THANOS | FLAG_LIQUID_GLASS;
++    // liquid-glass mod: frosted glass for popup menus, bottom sheets and alert dialogs
++    public static final int FLAG_GLASS_SURFACES = 1 << 19;
++    public static final int FLAGS_CHAT = FLAG_CHAT_BACKGROUND | FLAG_CHAT_FORUM_TWOCOLUMN | FLAG_CHAT_SPOILER | FLAG_CHAT_BLUR | FLAG_CHAT_SCALE | FLAG_CHAT_THANOS | FLAG_LIQUID_GLASS | FLAG_GLASS_SURFACES;
+ 
+     public static final int FLAG_CALLS_ANIMATIONS = 512;
+     public static final int FLAG_AUTOPLAY_VIDEOS = 1024;
+@@ -278,6 +280,11 @@ public class LiteMode {
+ 
+         int prevValue = value;
+         value = preferences.getInt("lite_mode6", defaultValue);
++        if (!preferences.getBoolean("liquid_glass_mod_defaults2", false)) {
++            // liquid-glass mod: turn on blur + liquid glass + glass surfaces once (can be switched off in Power Saving settings)
++            value |= FLAG_CHAT_BLUR | FLAG_LIQUID_GLASS | FLAG_GLASS_SURFACES;
++            preferences.edit().putBoolean("liquid_glass_mod_defaults2", true).putInt("lite_mode6", value).apply();
++        }
+         if (loaded) {
+             onFlagsUpdate(prevValue, value);
+         }
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java b/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java
+index 39f493f..4052fe3 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java
+@@ -1728,7 +1728,8 @@ public class SharedConfig {
+     }
+ 
+     public static boolean canBlurChat() {
+-        return getDevicePerformanceClass() >= (Build.VERSION.SDK_INT >= 31 ? PERFORMANCE_CLASS_AVERAGE : PERFORMANCE_CLASS_HIGH) || BuildVars.DEBUG_PRIVATE_VERSION;
++        // liquid-glass mod: GPU (RenderEffect) blur is cheap on Android 12+, allow it on every device class there
++        return Build.VERSION.SDK_INT >= 31 || getDevicePerformanceClass() >= PERFORMANCE_CLASS_HIGH || BuildVars.DEBUG_PRIVATE_VERSION;
+     }
+ 
+     public static boolean chatBlurEnabled() {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/glass/GlassRelayService.java b/TMessagesProj/src/main/java/org/telegram/messenger/glass/GlassRelayService.java
+new file mode 100644
+index 0000000..1bb7640
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/glass/GlassRelayService.java
+@@ -0,0 +1,259 @@
++package org.telegram.messenger.glass;
++
++import android.app.Notification;
++import android.app.NotificationChannel;
++import android.app.NotificationManager;
++import android.app.PendingIntent;
++import android.content.ComponentName;
++import android.content.Context;
++import android.content.Intent;
++import android.content.SharedPreferences;
++import android.content.pm.PackageManager;
++import android.os.Build;
++import android.os.Bundle;
++import android.os.Handler;
++import android.os.Looper;
++import android.provider.Settings;
++import android.service.notification.NotificationListenerService;
++import android.service.notification.StatusBarNotification;
++import android.text.TextUtils;
++
++import org.telegram.messenger.ApplicationLoader;
++import org.telegram.messenger.DialogObject;
++import org.telegram.messenger.FileLog;
++import org.telegram.messenger.MessagesController;
++import org.telegram.messenger.R;
++import org.telegram.messenger.UserConfig;
++import org.telegram.tgnet.ConnectionsManager;
++import org.telegram.ui.LaunchActivity;
++
++/**
++ * Telegram Glass v10: notification relay.
++ * The official Telegram app receives real FCM pushes; we only use its notifications as a wake-up
++ * signal so that Telegram Glass connects, pulls the update and shows its OWN normal notification.
++ * If nothing of ours appears within FALLBACK_MS, a simple copy of the official notification is posted.
++ * Event driven only: no polling, no wakelocks of our own.
++ */
++public class GlassRelayService extends NotificationListenerService {
++
++    public static final String[] OFFICIAL_PACKAGES = {"org.telegram.messenger", "org.telegram.messenger.web", "org.telegram.messenger.beta"};
++    public static final String PREF_ENABLED = "glassRelayEnabled";
++    public static final String PREF_HIDE = "glassRelayHideOfficial";
++    private static final long FALLBACK_MS = 8000;
++    private static final long WAKE_DEBOUNCE_MS = 3000;
++    private static final String FALLBACK_CHANNEL = "glass_relay_fallback";
++
++    private final Handler handler = new Handler(Looper.getMainLooper());
++    private long lastWake;
++    private int fallbackId = 0x6C000;
++
++    public static boolean isEnabled() {
++        return MessagesController.getGlobalNotificationsSettings().getBoolean(PREF_ENABLED, true);
++    }
++
++    public static boolean isHideEnabled() {
++        return MessagesController.getGlobalNotificationsSettings().getBoolean(PREF_HIDE, true);
++    }
++
++    public static boolean hasAccess(Context context) {
++        try {
++            String flat = Settings.Secure.getString(context.getContentResolver(), "enabled_notification_listeners");
++            if (TextUtils.isEmpty(flat)) return false;
++            ComponentName me = new ComponentName(context, GlassRelayService.class);
++            for (String s : flat.split(":")) {
++                ComponentName c = ComponentName.unflattenFromString(s);
++                if (me.equals(c)) return true;
++            }
++        } catch (Throwable e) {
++            FileLog.e(e);
++        }
++        return false;
++    }
++
++    /** @return label of an installed official Telegram, or null */
++    public static String findOfficialApp(Context context) {
++        PackageManager pm = context.getPackageManager();
++        for (String p : OFFICIAL_PACKAGES) {
++            try {
++                pm.getPackageInfo(p, 0);
++                return p;
++            } catch (Throwable ignore) {
++            }
++        }
++        return null;
++    }
++
++    private static boolean isOfficial(String pkg) {
++        for (String p : OFFICIAL_PACKAGES) if (p.equals(pkg)) return true;
++        return false;
++    }
++
++    @Override
++    public void onNotificationPosted(StatusBarNotification sbn) {
++        try {
++            if (sbn == null || !isOfficial(sbn.getPackageName()) || !isEnabled()) return;
++            final Notification n = sbn.getNotification();
++            if (n == null || (n.flags & Notification.FLAG_ONGOING_EVENT) != 0 || (n.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0) return;
++            final boolean summary = (n.flags & Notification.FLAG_GROUP_SUMMARY) != 0;
++
++            final long wakeTime = System.currentTimeMillis();
++            requestWake();
++
++            if (isHideEnabled()) {
++                try { cancelNotification(sbn.getKey()); } catch (Throwable e) { FileLog.e(e); }
++            }
++            if (summary) return;
++
++            final Bundle extras = n.extras;
++            final CharSequence title = extras != null ? extras.getCharSequence(Notification.EXTRA_TITLE) : null;
++            CharSequence text = extras != null ? extras.getCharSequence(Notification.EXTRA_TEXT) : null;
++            if (extras != null) {
++                CharSequence big = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
++                if (!TextUtils.isEmpty(big)) text = big;
++            }
++            if (TextUtils.isEmpty(title) && TextUtils.isEmpty(text)) return;
++            long did = 0;
++            if (Build.VERSION.SDK_INT >= 26) {
++                String sid = n.getShortcutId();
++                if (sid != null && sid.startsWith("ndid_")) {
++                    try { did = Long.parseLong(sid.substring(5)); } catch (Throwable ignore) {}
++                }
++            }
++            final CharSequence fTitle = title, fText = text;
++            final long fDid = did;
++            final String key = sbn.getKey();
++            Runnable old = pendingFallbacks.remove(key);
++            if (old != null) handler.removeCallbacks(old);
++            Runnable r = new Runnable() {
++                @Override
++                public void run() {
++                    pendingFallbacks.remove(key);
++                    try {
++                        if (!ownNotificationSince(wakeTime)) postFallback(fTitle, fText, fDid, key);
++                    } catch (Throwable e) {
++                        FileLog.e(e);
++                    }
++                }
++            };
++            pendingFallbacks.put(key, r);
++            handler.postDelayed(r, FALLBACK_MS);
++        } catch (Throwable e) {
++            FileLog.e(e);
++        }
++    }
++
++    private final java.util.HashMap<String, Runnable> pendingFallbacks = new java.util.HashMap<>();
++    private boolean wakeScheduled;
++    private android.os.PowerManager.WakeLock wakeLock;
++
++    /** Wake now, or (if we just woke) coalesce into one more wake right after the throttle window. Never drops a signal. */
++    private void requestWake() {
++        long now = System.currentTimeMillis();
++        long dt = now - lastWake;
++        if (dt >= WAKE_DEBOUNCE_MS) {
++            wakeUp();
++        } else if (!wakeScheduled) {
++            wakeScheduled = true;
++            handler.postDelayed(() -> { wakeScheduled = false; wakeUp(); }, WAKE_DEBOUNCE_MS - dt + 50);
++        }
++    }
++
++    private void wakeUp() {
++        lastWake = System.currentTimeMillis();
++        try {
++            if (wakeLock == null) {
++                android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
++                wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "tgglass:relay");
++                wakeLock.setReferenceCounted(false);
++            }
++            wakeLock.acquire(15000); // short, auto-released
++        } catch (Throwable e) {
++            FileLog.e(e);
++        }
++        try {
++            ApplicationLoader.postInitApplication();
++            for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
++                if (!UserConfig.getInstance(a).isClientActivated()) continue;
++                final int account = a;
++                ConnectionsManager.onInternalPushReceived(a);
++                ConnectionsManager.getInstance(a).resumeNetworkMaybe();
++                // make sure the update is actually pulled even if the socket thinks it is up to date
++                org.telegram.messenger.AndroidUtilities.runOnUIThread(() -> {
++                    try { MessagesController.getInstance(account).getDifference(); } catch (Throwable e) { FileLog.e(e); }
++                }, 1500);
++            }
++        } catch (Throwable e) {
++            FileLog.e(e);
++        }
++    }
++
++    @Override
++    public void onListenerConnected() {
++        super.onListenerConnected();
++        try {
++            if (!isEnabled()) return;
++            StatusBarNotification[] active = getActiveNotifications();
++            if (active == null) return;
++            for (StatusBarNotification sbn : active) {
++                if (sbn != null && isOfficial(sbn.getPackageName())) onNotificationPosted(sbn);
++            }
++        } catch (Throwable e) {
++            FileLog.e(e);
++        }
++    }
++
++    @Override
++    public void onListenerDisconnected() {
++        super.onListenerDisconnected();
++        if (Build.VERSION.SDK_INT >= 24) {
++            try { requestRebind(new ComponentName(this, GlassRelayService.class)); } catch (Throwable e) { FileLog.e(e); }
++        }
++    }
++
++    /** Called from the app start so a killed/disconnected listener gets bound again. */
++    public static void ensureBound(Context context) {
++        if (Build.VERSION.SDK_INT >= 24 && isEnabled() && hasAccess(context)) {
++            try { requestRebind(new ComponentName(context, GlassRelayService.class)); } catch (Throwable e) { FileLog.e(e); }
++        }
++    }
++
++    private boolean ownNotificationSince(long time) {
++        if (Build.VERSION.SDK_INT < 23) return false;
++        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
++        if (nm == null) return false;
++        for (StatusBarNotification s : nm.getActiveNotifications()) {
++            Notification n = s.getNotification();
++            if (n == null || (n.flags & Notification.FLAG_ONGOING_EVENT) != 0 || (n.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0) continue;
++            if (s.getPostTime() >= time - 2000) return true;
++        }
++        return false;
++    }
++
++    private void postFallback(CharSequence title, CharSequence text, long did, String key) {
++        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
++        if (nm == null) return;
++        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return;
++        if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(FALLBACK_CHANNEL) == null) {
++            nm.createNotificationChannel(new NotificationChannel(FALLBACK_CHANNEL, "Сообщения (через официальный Telegram)", NotificationManager.IMPORTANCE_HIGH));
++        }
++        Intent intent = new Intent(this, LaunchActivity.class);
++        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
++        if (did != 0 && !DialogObject.isEncryptedDialog(did)) {
++            intent.setAction("com.tmessages.openchat" + Math.random() + Integer.MAX_VALUE);
++            if (did > 0) intent.putExtra("userId", did); else intent.putExtra("chatId", -did);
++            intent.putExtra("currentAccount", UserConfig.selectedAccount);
++        }
++        int id = 0x6C000 + (key != null ? (key.hashCode() & 0xFFFF) : (fallbackId++ & 0xFFFF)); // updates replace the same fallback
++        PendingIntent pi = PendingIntent.getActivity(this, id, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
++        Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, FALLBACK_CHANNEL) : new Notification.Builder(this);
++        b.setSmallIcon(R.drawable.notification)
++            .setContentTitle(title)
++            .setContentText(text)
++            .setStyle(new Notification.BigTextStyle().bigText(text))
++            .setAutoCancel(true)
++            .setContentIntent(pi)
++            .setWhen(System.currentTimeMillis())
++            .setShowWhen(true);
++        nm.notify(id, b.build());
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarPopupWindow.java b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarPopupWindow.java
+index 6a9dc81..f254715 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarPopupWindow.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarPopupWindow.java
+@@ -141,6 +141,31 @@ public class ActionBarPopupWindow extends PopupWindow {
+         public int subtractBackgroundHeight;
+         Rect rect;
+ 
++        // liquid-glass mod
++        private boolean glassAllowed;
++        private org.telegram.ui.Components.glass.LiquidGlassBackdrop glassBackdrop;
++        private final android.graphics.RectF glassRect = new android.graphics.RectF();
++
++        @Override
++        protected void onAttachedToWindow() {
++            super.onAttachedToWindow();
++            if (glassAllowed && org.telegram.ui.Components.glass.LiquidGlassBackdrop.isEnabled()) {
++                if (glassBackdrop == null) {
++                    glassBackdrop = new org.telegram.ui.Components.glass.LiquidGlassBackdrop();
++                }
++                glassBackdrop.capture(getRootView(), getContext());
++                invalidate();
++            }
++        }
++
++        @Override
++        protected void onDetachedFromWindow() {
++            super.onDetachedFromWindow();
++            if (glassBackdrop != null) {
++                glassBackdrop.release();
++            }
++        }
++
+         public Rect getPadding() {
+             return bgPaddings;
+         }
+@@ -164,6 +189,7 @@ public class ActionBarPopupWindow extends PopupWindow {
+             if (resId != 0) {
+                 backgroundDrawable = getResources().getDrawable(resId).mutate();
+                 setPadding(dp(8), dp(8), dp(8), dp(8));
++                glassAllowed = resId == R.drawable.popup_fixed_alert2;
+             }
+             if (backgroundDrawable != null) {
+                 backgroundDrawable.getPadding(bgPaddings);
+@@ -370,6 +396,7 @@ public class ActionBarPopupWindow extends PopupWindow {
+ 
+         @Override
+         public void setBackgroundDrawable(Drawable drawable) {
++            glassAllowed = false;
+             backgroundColor = Color.WHITE;
+             backgroundDrawable = drawable;
+             if (backgroundDrawable != null) {
+@@ -530,6 +557,15 @@ public class ActionBarPopupWindow extends PopupWindow {
+                     }
+                     backgroundDrawable.setBounds(AndroidUtilities.rectTmp2);
+                     backgroundDrawable.draw(canvas);
++                    if (glassAllowed && glassBackdrop != null) {
++                        glassRect.set(
++                            AndroidUtilities.rectTmp2.left + bgPaddings.left,
++                            AndroidUtilities.rectTmp2.top + bgPaddings.top,
++                            AndroidUtilities.rectTmp2.right - bgPaddings.right,
++                            AndroidUtilities.rectTmp2.bottom - bgPaddings.bottom
++                        );
++                        glassBackdrop.draw(canvas, this, glassRect, dp(6), backgroundColor, applyAlpha ? backAlpha : 255);
++                    }
+                     if (clipChildren) {
+                         AndroidUtilities.rectTmp2.left += bgPaddings.left;
+                         AndroidUtilities.rectTmp2.top += bgPaddings.top;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/AlertDialog.java b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/AlertDialog.java
+index 45c1ea6..9f6d156 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/AlertDialog.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/AlertDialog.java
+@@ -215,6 +215,9 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
+     private boolean topAnimationAutoRepeat = true;
+     private boolean blurredBackground;
+     private boolean blurredNativeBackground;
++    // liquid-glass mod
++    private boolean glassBackground;
++    private org.telegram.ui.Components.glass.LiquidGlassBackdrop glassBackdrop;
+     private int backgroundColor;
+     float blurAlpha = 0.8f;
+     private boolean blurBehind;
+@@ -224,6 +227,7 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
+         this.blurAlpha = blurAlpha;
+         this.blurBehind = blurBehind;
+         this.blurredBackground = blurBackground;
++        this.glassBackground = this.glassBackground && blurBackground;
+     }
+ 
+     protected boolean supportsNativeBlur() {
+@@ -308,6 +312,10 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
+         final boolean isDark = AndroidUtilities.computePerceivedBrightness(backgroundColor) < 0.721f;
+         blurredNativeBackground = supportsNativeBlur() && progressViewStyle == ALERT_TYPE_MESSAGE;
+         blurredBackground = (blurredNativeBackground || !supportsNativeBlur() && SharedConfig.getDevicePerformanceClass() >= SharedConfig.PERFORMANCE_CLASS_HIGH && LiteMode.isEnabled(LiteMode.FLAG_CHAT_BLUR)) && isDark;
++        glassBackground = !blurredNativeBackground && progressStyle != ALERT_TYPE_SPINNER && progressStyle != ALERT_TYPE_LOADING && org.telegram.ui.Components.glass.LiquidGlassBackdrop.isEnabled();
++        if (glassBackground) {
++            blurredBackground = true;
++        }
+ 
+         backgroundPaddings = new Rect();
+         if (progressStyle != ALERT_TYPE_SPINNER || blurredBackground) {
+@@ -578,6 +586,11 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
+                     AndroidUtilities.rectTmp.set(getPaddingLeft(), getPaddingTop(), getMeasuredWidth() - getPaddingRight(), getMeasuredHeight() - getPaddingBottom());
+                 }
+ 
++                if (glassBackground && glassBackdrop != null && glassBackdrop.draw(canvas, this, AndroidUtilities.rectTmp, r, backgroundColor, (int) (0xFF * blurPaintAlpha.set(1f)))) {
++                    super.draw(canvas);
++                    return;
++                }
++
+                 // draw blur of background
+                 float blurAlpha = blurPaintAlpha.set(blurPaint != null ? 1f : 0f);
+                 if (blurPaint != null) {
+@@ -1337,6 +1350,22 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
+                         params.setBlurBehindRadius(20);
+                     }
+                 }
++            } else if (glassBackground) {
++                if (glassBackdrop == null) {
++                    glassBackdrop = new org.telegram.ui.Components.glass.LiquidGlassBackdrop();
++                }
++                glassBackdrop.capture(null, getContext());
++                if (containerView != null) {
++                    final float rad = dp(20);
++                    containerView.setOutlineProvider(new android.view.ViewOutlineProvider() {
++                        @Override
++                        public void getOutline(View view, android.graphics.Outline outline) {
++                            outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), rad);
++                        }
++                    });
++                    containerView.setElevation(dp(10));
++                    containerView.invalidate();
++                }
+             } else {
+                 AndroidUtilities.makeGlobalBlurBitmap(bitmap -> {
+                     if (bitmap == null) {
+@@ -2011,6 +2040,7 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
+         public void notDrawBackgroundOnTopView(boolean b) {
+             alertDialog.notDrawBackgroundOnTopView = b;
+             alertDialog.blurredBackground = false;
++            alertDialog.glassBackground = false;
+         }
+ 
+         public void setButtonsVertical(boolean vertical) {
+@@ -2029,6 +2059,7 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
+ 
+         public Builder setBlurredBackground(boolean b) {
+             alertDialog.blurredBackground = b;
++            alertDialog.glassBackground = alertDialog.glassBackground && b;
+             return this;
+         }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/BottomSheet.java b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/BottomSheet.java
+index b479005..618fde2 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/BottomSheet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/BottomSheet.java
+@@ -224,6 +224,9 @@ public class BottomSheet extends Dialog implements BaseFragment.AttachedSheet {
+     protected boolean allowNestedScroll = true;
+ 
+     protected Drawable shadowDrawable;
++    // liquid-glass mod
++    private org.telegram.ui.Components.glass.LiquidGlassBackdrop glassBackdrop;
++    private org.telegram.ui.Components.glass.LiquidGlassSheetDrawable glassSheetDrawable;
+     protected int backgroundPaddingTop;
+     protected int backgroundPaddingLeft;
+ 
+@@ -1386,7 +1389,12 @@ public class BottomSheet extends Dialog implements BaseFragment.AttachedSheet {
+                     onContainerTranslationYChanged(translationY);
+                 }
+             };
+-            containerView.setBackgroundDrawable(shadowDrawable);
++            if (glassBackdrop != null && org.telegram.ui.Components.glass.LiquidGlassBackdrop.isEnabled()) {
++                glassSheetDrawable = new org.telegram.ui.Components.glass.LiquidGlassSheetDrawable(shadowDrawable, glassBackdrop, internalBackgroundColor);
++                containerView.setBackgroundDrawable(glassSheetDrawable);
++            } else {
++                containerView.setBackgroundDrawable(shadowDrawable);
++            }
+             containerView.setPadding(backgroundPaddingLeft, (applyTopPadding ? dp(8) : 0) + backgroundPaddingTop - 1, backgroundPaddingLeft, (applyBottomPadding ? dp(8) : 0));
+         }
+         containerView.setVisibility(View.INVISIBLE);
+@@ -1562,6 +1570,9 @@ public class BottomSheet extends Dialog implements BaseFragment.AttachedSheet {
+     private int internalBackgroundColor;
+     public void setBackgroundColor(int color) {
+         shadowDrawable.setColorFilter(color, PorterDuff.Mode.MULTIPLY);
++        if (glassSheetDrawable != null) {
++            glassSheetDrawable.setSurfaceColor(color);
++        }
+         if (internalBackgroundColor != color) {
+             internalBackgroundColor = color;
+             if (container != null) {
+@@ -1577,6 +1588,15 @@ public class BottomSheet extends Dialog implements BaseFragment.AttachedSheet {
+     @Override
+     public void show() {
+         if (!AndroidUtilities.isSafeToShow(getContext())) return;
++        if (org.telegram.ui.Components.glass.LiquidGlassBackdrop.isEnabled() && (glassSheetDrawable != null || containerView == null)) {
++            if (glassBackdrop == null) {
++                glassBackdrop = new org.telegram.ui.Components.glass.LiquidGlassBackdrop();
++            }
++            glassBackdrop.capture(null, getContext());
++            if (glassSheetDrawable != null) {
++                glassSheetDrawable.invalidateSelf();
++            }
++        }
+         if (attachedFragment != null) {
+             onCreateInternal();
+         } else {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index fcd1abc..85fb64b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1647,6 +1647,32 @@ public class ChatActivity extends BaseFragment implements
+     private final static int bot_help = 30;
+     private final static int bot_settings = 31;
+     private final static int call = 32;
++    // Telegram Glass v10.8: round peer avatar in the chat header instead of the call icon (call stays in the ⋮ menu)
++    private static final boolean GLASS_HEADER_AVATAR = true;
++    private final static int glass_header_avatar = 7344;
++
++    private void addGlassHeaderAvatar(ActionBarMenu menu) {
++        if (currentUser == null || UserObject.isUserSelf(currentUser) || inPreviewMode) return;
++        try {
++            org.telegram.ui.ActionBar.ActionBarMenuItem item = menu.addItem(glass_header_avatar, 0);
++            item.setContentDescription(LocaleController.getString(R.string.AccDescrProfilePicture));
++            final org.telegram.ui.Components.BackupImageView img = new org.telegram.ui.Components.BackupImageView(getContext()) {
++                private final android.graphics.RectF rr = new android.graphics.RectF();
++                @Override
++                protected void onDraw(android.graphics.Canvas canvas) {
++                    super.onDraw(canvas);
++                    rr.set(0, 0, getWidth(), getHeight());
++                    org.telegram.ui.Components.glass.GlassRim.draw(canvas, rr, getWidth() / 2f, 1f);
++                }
++            };
++            img.setRoundRadius(dp(18));
++            org.telegram.ui.Components.AvatarDrawable ad = new org.telegram.ui.Components.AvatarDrawable(currentUser);
++            img.setForUserOrChat(currentUser, ad);
++            item.addView(img, org.telegram.ui.Components.LayoutHelper.createFrame(36, 36, android.view.Gravity.CENTER));
++        } catch (Throwable e) {
++            FileLog.e(e);
++        }
++    }
+     private final static int video_call = 33;
+ 
+     private final static int attach_photo = 0;
+@@ -3965,6 +3991,8 @@ public class ChatActivity extends BaseFragment implements
+                     if (!getMessagesController().getTranslateController().toggleTranslatingDialog(getDialogId(), true)) {
+                         updateTopPanel(true);
+                     }
++                } else if (id == glass_header_avatar) {
++                    if (avatarContainer != null) avatarContainer.openProfile(false);
+                 } else if (id == call || id == video_call) {
+                     if (currentUser != null && getParentActivity() != null) {
+                         VoIPHelper.startCall(currentUser, id == video_call, userInfo != null && userInfo.video_calls_available, getParentActivity(), getMessagesController().getUserFull(currentUser.id), getAccountInstance());
+@@ -4260,9 +4288,13 @@ public class ChatActivity extends BaseFragment implements
+                 audioCallIconItem = menu.lazilyAddItem(call, R.drawable.call, themeDelegate);
+                 audioCallIconItem.setContentDescription(LocaleController.getString(R.string.Call));
+                 userFull = getMessagesController().getUserFull(currentUser.id);
+-                if (userFull != null && userFull.phone_calls_available) {
++                if (GLASS_HEADER_AVATAR) {
++                    showAudioCallAsIcon = false;
++                    audioCallIconItem.setVisibility(View.GONE);
++                    addGlassHeaderAvatar(menu);
++                } else if (userFull != null && userFull.phone_calls_available) {
+                     showAudioCallAsIcon = !inPreviewMode;
+-                    audioCallIconItem.setVisibility(View.VISIBLE);
++                    audioCallIconItem.setVisibility(GLASS_HEADER_AVATAR ? View.GONE : View.VISIBLE);
+                 } else {
+                     showAudioCallAsIcon = false;
+                     audioCallIconItem.setVisibility(View.GONE);
+@@ -8069,6 +8101,13 @@ public class ChatActivity extends BaseFragment implements
+         checkSendButtonBlockedByTyping(false);
+ 
+         chatInputBubbleContainer.addView(chatActivityEnterView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.LEFT | Gravity.BOTTOM, 7, 0, 7, 0));
++        if (ChatActivityEnterView.GLASS_SPLIT) { // Telegram Glass v10.1: separate round glass attach & mic/send buttons
++            final ChatActivityEnterView enterViewForGlass = chatActivityEnterView;
++            chatInputViewsContainer.setGlassSplit(
++                (l, r, rel) -> enterViewForGlass.fillGlassSplit(l, r, rel),
++                glassBackgroundDrawableFactory.create(chatInputViewsContainer, blurredBackgroundColorProvider),
++                glassBackgroundDrawableFactory.create(chatInputViewsContainer, blurredBackgroundColorProvider));
++        }
+ 
+         int chatListIndex = contentView.indexOfChild(chatListView);
+         chatListIndex = chatListIndex < 0 ? contentView.getChildCount() : (chatListIndex + 1);
+@@ -18292,7 +18331,7 @@ public class ChatActivity extends BaseFragment implements
+                     }
+                 }
+                 if (!actionBar.isSearchFieldVisible() && audioCallIconItem != null) {
+-                    audioCallIconItem.setVisibility((showAudioCallAsIcon && !showSearchAsIcon) ? View.VISIBLE : View.GONE);
++                    audioCallIconItem.setVisibility((showAudioCallAsIcon && !showSearchAsIcon && !GLASS_HEADER_AVATAR) ? View.VISIBLE : View.GONE);
+                 }
+                 if (headerItem != null) {
+                     TLRPC.UserFull userInfo = getCurrentUserInfo();
+@@ -23940,7 +23979,7 @@ public class ChatActivity extends BaseFragment implements
+                     }
+                 }
+                 if (headerItem != null) {
+-                    showAudioCallAsIcon = userInfo.phone_calls_available && !inPreviewMode;
++                    showAudioCallAsIcon = userInfo.phone_calls_available && !inPreviewMode && !GLASS_HEADER_AVATAR;
+                     if (userInfo.phone_calls_available) {
+                         if (showAudioCallAsIcon) {
+                             if (audioCallIconItem != null) {
+@@ -23949,7 +23988,7 @@ public class ChatActivity extends BaseFragment implements
+                                     item.setAlpha(0f);
+                                     item.animate().alpha(1f).setDuration(160).setInterpolator(CubicBezierInterpolator.EASE_IN).setStartDelay(50).start();
+                                 }
+-                                audioCallIconItem.setVisibility(View.VISIBLE);
++                                audioCallIconItem.setVisibility(GLASS_HEADER_AVATAR ? View.GONE : View.VISIBLE);
+                             }
+                         } else {
+                             headerItem.showSubItem(call, true);
+@@ -29687,7 +29726,7 @@ public class ChatActivity extends BaseFragment implements
+             TLRPC.UserFull userFull = getMessagesController().getUserFull(currentUser.id);
+             if (userFull != null && userFull.phone_calls_available) {
+                 showAudioCallAsIcon = !inPreviewMode;
+-                audioCallIconItem.setVisibility(View.VISIBLE);
++                audioCallIconItem.setVisibility(GLASS_HEADER_AVATAR ? View.GONE : View.VISIBLE);
+             } else {
+                 showAudioCallAsIcon = false;
+                 audioCallIconItem.setVisibility(View.GONE);
+@@ -38593,7 +38632,7 @@ public class ChatActivity extends BaseFragment implements
+                     headerItem.setVisibility(View.VISIBLE);
+                 }
+                 if (audioCallIconItem != null && showAudioCallAsIcon) {
+-                    audioCallIconItem.setVisibility(View.VISIBLE);
++                    audioCallIconItem.setVisibility(GLASS_HEADER_AVATAR ? View.GONE : View.VISIBLE);
+                 }
+                 if (topicCreateItem != null) {
+                     topicCreateItem.setVisibility(View.VISIBLE);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index a8f9973..696dc68 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -2702,6 +2702,11 @@ public class ChatActivityEnterView extends FrameLayout implements
+         textFieldContainer.addView(frameLayout, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.BOTTOM, 0, 0, DEFAULT_HEIGHT, 0));
+ 
+         emojiButton = new ChatActivityEnterViewAnimatedIconView(context) {
++            @Override
++            public void setTranslationX(float translationX) {
++                super.setTranslationX(GLASS_SPLIT && isChat ? 0 : translationX); // v10.1: emoji lives at the right end of the pill
++            }
++
+             @Override
+             protected void onDraw(Canvas canvas) {
+                 super.onDraw(canvas);
+@@ -2752,7 +2757,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 }
+             }
+         });
+-        messageEditTextContainer.addView(emojiButton, LayoutHelper.createFrame(DEFAULT_HEIGHT, DEFAULT_HEIGHT, Gravity.BOTTOM | Gravity.LEFT, 2, 0, 0, 0));
++        messageEditTextContainer.addView(emojiButton, GLASS_SPLIT && isChat
++            ? LayoutHelper.createFrame(DEFAULT_HEIGHT, DEFAULT_HEIGHT, Gravity.BOTTOM | Gravity.RIGHT, 0, 0, 2, 0)
++            : LayoutHelper.createFrame(DEFAULT_HEIGHT, DEFAULT_HEIGHT, Gravity.BOTTOM | Gravity.LEFT, 2, 0, 0, 0));
+         setEmojiButtonImage(false, false);
+ 
+         deleteRichDraftButton = new ImageView(context);
+@@ -2827,6 +2834,20 @@ public class ChatActivityEnterView extends FrameLayout implements
+             }
+ 
+             attachButton = new ImageView(context) {
++                @Override
++                public void setTranslationX(float translationX) {
++                    super.setTranslationX(GLASS_SPLIT ? 0 : translationX); // v10.1: separate round button on the left
++                }
++
++                // v10.4: keep the round attach button visible while typing (fixed pill width)
++                private boolean glassKeep() {
++                    return GLASS_SPLIT && !recordingAudioVideo;
++                }
++                @Override public void setAlpha(float a) { super.setAlpha(glassKeep() ? 1f : a); }
++                @Override public void setScaleX(float v) { super.setScaleX(glassKeep() ? 1f : v); }
++                @Override public void setScaleY(float v) { super.setScaleY(glassKeep() ? 1f : v); }
++                @Override public void setVisibility(int v) { super.setVisibility(glassKeep() ? VISIBLE : v); }
++
+                 @Override
+                 public boolean dispatchTouchEvent(MotionEvent event) {
+                     if (getAlpha() < 0.5f) return false;
+@@ -2837,7 +2858,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+             attachButton.setColorFilter(new PorterDuffColorFilter(getThemedColor(Theme.key_glass_defaultIcon), PorterDuff.Mode.MULTIPLY));
+             attachButton.setImageResource(R.drawable.msg_input_attach2);
+             attachButton.setBackground(Theme.createSelectorDrawable(getThemedColor(Theme.key_listSelector)));
+-            messageEditTextContainer.addView(attachButton, LayoutHelper.createFrame(DEFAULT_HEIGHT, DEFAULT_HEIGHT, Gravity.BOTTOM | Gravity.RIGHT));
++            messageEditTextContainer.addView(attachButton, GLASS_SPLIT
++                ? LayoutHelper.createFrame(DEFAULT_HEIGHT, DEFAULT_HEIGHT, Gravity.BOTTOM | Gravity.LEFT, 2, 0, 0, 0)
++                : LayoutHelper.createFrame(DEFAULT_HEIGHT, DEFAULT_HEIGHT, Gravity.BOTTOM | Gravity.RIGHT));
+             attachButton.setOnClickListener(v -> {
+                 if (adjustPanLayoutHelper != null && adjustPanLayoutHelper.animationInProgress() || attachLayoutPaddingAlpha == 0f) {
+                     return;
+@@ -5812,7 +5835,8 @@ public class ChatActivityEnterView extends FrameLayout implements
+         messageEditText.setMaxLines(6);
+         messageEditText.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18);
+         messageEditText.setGravity(Gravity.BOTTOM);
+-        messageEditText.setPadding(0, dp(9), 0, dp(10));
++        messageEditText.setPadding(GLASS_SPLIT ? dp(13) : 0, dp(9), 0, dp(10)); // v10.4: text inset inside glass pill
++        if (GLASS_SPLIT) messageEditText.hintExtraX = dp(9); // v10.7: hint drawn at paddingLeft + 9dp (caret is at paddingLeft, 2dp wide)
+         messageEditText.setBackgroundDrawable(null);
+         messageEditText.setTextColor(getThemedColor(Theme.key_chat_messagePanelText));
+         messageEditText.setLinkTextColor(getThemedColor(Theme.key_chat_messageLinkOut));
+@@ -6470,6 +6494,63 @@ public class ChatActivityEnterView extends FrameLayout implements
+ 
+     public static final int DEFAULT_HEIGHT = 44;
+ 
++    /** Telegram Glass v10.1: iOS-style split input (round attach | pill with emoji | round mic/send) */
++    public static final boolean GLASS_SPLIT = true;
++    private final int[] glassLocA = new int[2], glassLocB = new int[2];
++
++    private boolean glassRectOf(View v, View relativeTo, android.graphics.RectF out, boolean rightBottom44) {
++        if (v == null || v.getVisibility() != VISIBLE || !v.isAttachedToWindow() || v.getWidth() <= 0) return false;
++        relativeTo.getLocationInWindow(glassLocA);
++        v.getLocationInWindow(glassLocB);
++        float x = glassLocB[0] - glassLocA[0], y = glassLocB[1] - glassLocA[1];
++        if (rightBottom44) {
++            final float sz = dp(DEFAULT_HEIGHT);
++            out.set(x + v.getWidth() - sz, y + v.getHeight() - sz, x + v.getWidth(), y + v.getHeight());
++        } else {
++            final float cx = x + v.getWidth() * v.getScaleX() / 2f, cy = y + v.getHeight() * v.getScaleY() / 2f;
++            final float r = dp(DEFAULT_HEIGHT) / 2f * Math.min(1f, Math.max(v.getScaleX(), 0f));
++            out.set(cx - r, cy - r, cx + r, cy + r);
++        }
++        return true;
++    }
++
++    /**
++     * Fills the round glass button rects (relative to {@code relativeTo}); empty rect = no button.
++     * @return false if the normal single island should be drawn (recording, bot web button, hidden field...)
++     */
++    public boolean fillGlassSplit(android.graphics.RectF left, android.graphics.RectF right, View relativeTo) {
++        left.setEmpty();
++        right.setEmpty();
++        if (!GLASS_SPLIT || relativeTo == null || getVisibility() != VISIBLE || recordingAudioVideo) return false;
++        if (botWebViewButton != null && botWebViewButton.getVisibility() == VISIBLE) return false;
++        if (messageEditTextContainer == null || messageEditTextContainer.getVisibility() != VISIBLE) return false;
++        if (attachButton != null && attachButton.getAlpha() > 0.5f && attachButton.getScaleX() > 0.3f) {
++            if (!glassRectOf(attachButton, relativeTo, left, false)) left.setEmpty();
++        }
++        if (sendButtonContainer != null && sendButtonContainer.getAlpha() > 0.5f) {
++            if (!glassRectOf(sendButtonContainer, relativeTo, right, true)) right.setEmpty();
++        }
++        glassAlignText(left, relativeTo);
++        return !left.isEmpty() || !right.isEmpty();
++    }
++
++    // v10.5: the pill is drawn by ChatInputViewsContainer from the attach circle position, independent from the
++    // EditText layout; shift the EditText so its text/hint start ~14dp inside the pill's left edge.
++    private float glassTextShift;
++    private void glassAlignText(android.graphics.RectF left, View relativeTo) {
++        if (messageEditText == null || left.isEmpty()) return;
++        relativeTo.getLocationInWindow(glassLocA);
++        messageEditText.getLocationInWindow(glassLocB);
++        final float baseX = glassLocB[0] - glassLocA[0] - messageEditText.getTranslationX();
++        final float textX = baseX + messageEditText.getPaddingLeft();
++        final float want = left.right + dp(6) + dp(14);
++        final float shift = Math.max(0, want - textX);
++        if (Math.abs(shift - glassTextShift) > 0.5f) {
++            glassTextShift = shift;
++            messageEditText.post(() -> { updateMessageTextParams(); updateFieldRight(lastAttachVisible); });
++        }
++    }
++
+     private boolean resizeForTopViewLastShow;
+     private void resizeForTopView(boolean show) {
+         if (resizeForTopViewLastShow == show) {
+@@ -8760,7 +8841,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+         slowModeButton.setVisibility(visible ? VISIBLE : GONE);
+         int padding = visible ? dp(slowModeButton.isPremiumMode ? 26 : 16) : 0;
+         if (messageEditText != null && messageEditText.getPaddingRight() != padding) {
+-            messageEditText.setPadding(0, dp(9), padding, dp(10));
++            messageEditText.setPadding(GLASS_SPLIT ? dp(13) : 0, dp(9), padding, dp(10));
+         }
+     }
+ 
+@@ -8790,6 +8871,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+             }
+         }
+         layoutParams.rightMargin = Math.max(layoutParams.rightMargin, Math.max(0, sendButton.width() - dp(DEFAULT_HEIGHT)));
++        if (GLASS_SPLIT && isChat && !(isStories && isLiveComment)) {
++            layoutParams.rightMargin = Math.max(layoutParams.rightMargin, dp(50)) + (int) glassTextShift; // v10.4/10.5: never under emoji at pill's right end
++        }
+         if (doneButton != null && doneButton.getVisibility() == VISIBLE) {
+             layoutParams.rightMargin = Math.max(layoutParams.rightMargin, Math.max(0, doneButton.width() - dp(DEFAULT_HEIGHT)));
+         }
+@@ -14780,7 +14864,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+ 
+     private void updateMessageTextParams() {
+         if (messageEditText != null) {
+-            messageEditText.setTranslationX(messageTextPaddingTranslationX + messageTextTranslationX);
++            messageEditText.setTranslationX(messageTextPaddingTranslationX + messageTextTranslationX + glassTextShift);
+         }
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
+index 2d2b284..0d04ee7 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
+@@ -768,6 +768,8 @@ public class EditTextBoldCursor extends EditTextEffects {
+     }
+ 
+     public int hintLayoutOffset;
++    /** Telegram Glass: extra x shift of the hint so the caret does not overlap its first letter */
++    public int hintExtraX;
+ 
+     private void drawHint(Canvas canvas) {
+         if (length() != 0 && !transformHintToHeader) {
+@@ -814,7 +816,10 @@ public class EditTextBoldCursor extends EditTextEffects {
+                 hintAnimatedDrawable.setRightPadding(0);
+             }
+             hintAnimatedDrawable.setAlpha((int) (Color.alpha(hintColor) * hintAlpha));
++            canvas.save();
++            canvas.translate(hintExtraX, 0); // Telegram Glass: hint starts after the caret
+             hintAnimatedDrawable.draw(canvas);
++            canvas.restore();
+         } else if (hintLayout != null && (hintVisible || hintAlpha != 0)) {
+             int oldColor = getPaint().getColor();
+ 
+@@ -829,7 +834,7 @@ public class EditTextBoldCursor extends EditTextEffects {
+                 float offset = getMeasuredWidth() - hintWidth;
+                 canvas.translate(hintLayoutX = left + getScrollX() + offset, hintLayoutY = lineY - hintLayout.getHeight() - dp(7));
+             } else {
+-                canvas.translate(hintLayoutX = left + getScrollX()+ hintLayoutOffset, hintLayoutY = lineY - hintLayout.getHeight() - AndroidUtilities.dp2(7));
++                canvas.translate(hintLayoutX = left + getScrollX()+ hintLayoutOffset + (hintExtraX != 0 ? getPaddingLeft() + hintExtraX : 0), hintLayoutY = lineY - hintLayout.getHeight() - AndroidUtilities.dp2(7));
+             }
+             if (transformHintToHeader) {
+                 float scale = 1.0f - 0.3f * headerAnimationProgress;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ProfileActionsView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ProfileActionsView.java
+index ce74c41..541607f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ProfileActionsView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ProfileActionsView.java
+@@ -107,6 +107,91 @@ public class ProfileActionsView extends View {
+     public static final int KEY_EDIT_USERNAME = 15;
+     public static final int KEY_EDIT_INFO = 16;
+     public static final int KEY_SETTINGS = 17;
++    // Telegram Glass v10.1: iOS-style user profile buttons
++    private static boolean isRu() {
++        try { return org.telegram.messenger.LocaleController.getInstance().getCurrentLocale().getLanguage().startsWith("ru"); } catch (Throwable e) { return false; }
++    }
++    public static final int KEY_SEARCH = 18;
++    public static final int KEY_MORE = 19;
++
++    /** v10.1: users get 5 round liquid-glass buttons (call, video, mute, search, more) */
++    public boolean circles() {
++        return mode == MODE_USER || mode == MODE_MY_PROFILE;
++    }
++
++    private View[] glassSources;
++    private RenderNode glassSrcNode;
++    private final java.util.HashMap<Action, RenderNode> glassNodes = new java.util.HashMap<>();
++    private final java.util.HashMap<Action, org.telegram.ui.Components.blur3.LiquidGlassEffect> glassEffects = new java.util.HashMap<>();
++    private final int[] glassLocA = new int[2], glassLocB = new int[2];
++
++    /** Views (in z-order) whose content is refracted by the round glass buttons. */
++    public void setGlassSources(View... sources) {
++        glassSources = sources;
++    }
++
++    private boolean useGlass(Canvas canvas) {
++        return circles() && Build.VERSION.SDK_INT >= 33 && glassSources != null && canvas.isHardwareAccelerated()
++            && org.telegram.messenger.LiteMode.isEnabled(org.telegram.messenger.LiteMode.FLAG_LIQUID_GLASS);
++    }
++
++    /** circle of the action inside its cell: top-aligned, label goes below */
++    private void circleRect(Action action, RectF out) {
++        // v10.3: big iOS-style glass circle, label below
++        final float d = Math.max(0, Math.min(action.rect.width() - dp(2), dp(56)));
++        final float cx = action.rect.centerX();
++        final float t = action.rect.top - dp(6);
++        out.set(cx - d / 2f, t, cx + d / 2f, t + d);
++    }
++
++    @androidx.annotation.RequiresApi(api = 33)
++    private void recordGlassSource() {
++        if (glassSrcNode == null) glassSrcNode = new RenderNode("glassProfileSrc");
++        glassSrcNode.setPosition(0, 0, Math.max(1, getWidth()), Math.max(1, getHeight()));
++        android.graphics.RecordingCanvas rc = glassSrcNode.beginRecording();
++        getLocationInWindow(glassLocA);
++        for (View v : glassSources) {
++            if (v == null || v.getVisibility() != VISIBLE || v.getAlpha() <= 0.01f || v.getWidth() <= 0 || !v.isAttachedToWindow()) continue;
++            v.getLocationInWindow(glassLocB);
++            rc.save();
++            rc.translate(glassLocB[0] - glassLocA[0], glassLocB[1] - glassLocA[1]);
++            rc.scale(v.getScaleX(), v.getScaleY());
++            if (v.getAlpha() < 1f) rc.saveLayerAlpha(0, 0, v.getWidth(), v.getHeight(), (int) (255 * v.getAlpha()));
++            try { v.draw(rc); } catch (Throwable ignore) {}
++            rc.restore();
++        }
++        glassSrcNode.endRecording();
++    }
++
++    @androidx.annotation.RequiresApi(api = 33)
++    private void drawGlassCircle(Canvas canvas, Action action, RectF circle, float alpha) {
++        final int l = (int) Math.floor(circle.left), t = (int) Math.floor(circle.top);
++        final int w = (int) Math.ceil(circle.width()), h = (int) Math.ceil(circle.height());
++        if (w < 2 || h < 2) return;
++        RenderNode node = glassNodes.get(action);
++        org.telegram.ui.Components.blur3.LiquidGlassEffect effect = glassEffects.get(action);
++        if (node == null) {
++            node = new RenderNode("glassProfileBtn");
++            glassNodes.put(action, node);
++        }
++        node.setPosition(0, 0, w, h);
++        if (effect == null) {
++            effect = new org.telegram.ui.Components.blur3.LiquidGlassEffect(node, 0);
++            glassEffects.put(action, effect);
++        }
++        android.graphics.RecordingCanvas rc = node.beginRecording();
++        rc.translate(-l, -t);
++        rc.drawRenderNode(glassSrcNode);
++        node.endRecording();
++        final float r = Math.min(w, h) / 2f;
++        effect.update(0, 0, w, h, r, r, r, r, r * 0.5f, 0.8f, 1.5f, 0x66000000);
++        node.setAlpha(Utilities.clamp01(alpha));
++        canvas.save();
++        canvas.translate(l, t);
++        canvas.drawRenderNode(node);
++        canvas.restore();
++        org.telegram.ui.Components.glass.GlassRim.draw(canvas, circle, Math.min(circle.width(), circle.height()) / 2f, alpha);
++    }
+ 
+     private boolean isApplying;
+     private boolean isNotificationsEnabled;
+@@ -295,10 +380,31 @@ public class ProfileActionsView extends View {
+             return;
+         }
+ 
+-        if (!ignoreRect) {
++        final boolean glass = useGlass(canvas);
++        if (glass) {
++            recordGlassSource();
+             for (int i = 0; i < c; i++) {
+                 Action action = actions.get(i);
+-                if (!action.isDeleted) {
++                if (action.isDeleted) continue;
++                circleRect(action, AndroidUtilities.rectTmp);
++                AndroidUtilities.rectTmp.inset(
++                    AndroidUtilities.rectTmp.width() / 2.0f * (1.0f - action.getScale()),
++                    AndroidUtilities.rectTmp.height() / 2.0f * (1.0f - action.getScale())
++                );
++                drawGlassCircle(canvas, action, AndroidUtilities.rectTmp, action.getAlpha() * alphaFraction1);
++            }
++        } else if (!ignoreRect || circles()) {
++            for (int i = 0; i < c; i++) {
++                Action action = actions.get(i);
++                if (!action.isDeleted && circles()) {
++                    circleRect(action, AndroidUtilities.rectTmp);
++                    final int wasAlpha = paint.getAlpha();
++                    paint.setShadowLayer(0, 0, 0, 0);
++                    paint.setAlpha((int) Math.min(255, action.getAlpha() * alphaFraction1 * Math.max(wasAlpha, 70)));
++                    canvas.drawCircle(AndroidUtilities.rectTmp.centerX(), AndroidUtilities.rectTmp.centerY(), AndroidUtilities.rectTmp.width() / 2f * action.getScale(), paint);
++                    org.telegram.ui.Components.glass.GlassRim.draw(canvas, AndroidUtilities.rectTmp, AndroidUtilities.rectTmp.width() / 2f, action.getAlpha() * alphaFraction1);
++                    paint.setAlpha(wasAlpha);
++                } else if (!action.isDeleted) {
+                     AndroidUtilities.rectTmp.set(action.rect);
+                     AndroidUtilities.rectTmp.inset(
+                         action.rect.width() / 2.0f * (1.0f - action.getScale()),
+@@ -328,7 +434,7 @@ public class ProfileActionsView extends View {
+             }
+         }
+ 
+-        drawRenderNode(canvas);
++        if (!circles()) drawRenderNode(canvas);
+ 
+         float alphaFraction2 = Utilities.clamp01((fraction - 0.4f) / 0.6f);
+         if (alphaFraction2 > 0f) {
+@@ -392,7 +498,12 @@ public class ProfileActionsView extends View {
+ 
+         action.text.setMaxWidth(action.rect.width() - dp(2));
+         action.textScale = action.text.getLineCount() >= 3 ? 0.75f : action.text.getLineCount() >= 2 ? 0.85f : 1.0f;
+-        final float drawableTop = Math.max(0, (targetHeight - action.text.getHeight() * action.textScale) / 3f + dpf2(1.33f));
++        float drawableTop = Math.max(0, (targetHeight - action.text.getHeight() * action.textScale) / 3f + dpf2(1.33f));
++        if (circles()) {
++            circleRect(action, AndroidUtilities.rectTmp);
++            drawableTop = AndroidUtilities.rectTmp.centerY() - drawableR;
++        }
++
+         action.setBounds(
+             (int) (cx - drawableR),
+             (int) (drawableTop),
+@@ -427,11 +538,17 @@ public class ProfileActionsView extends View {
+         final float cy = action.rect.centerY();
+         fraction *= action.getScale();
+         canvas.scale(fraction, fraction, cx, cy);
++        if (circles()) { canvas.clipRect(action.rect.left, 0, action.rect.right, getHeight()); } else
+         canvas.clipRect(action.rect);
+ 
+         updateBounds(action);
+ 
+-        final float textY = action.bounds.bottom + action.bounds.top - action.text.getHeight() * action.textScale / 2.0f - dp(4.66f);
++        float textY = action.bounds.bottom + action.bounds.top - action.text.getHeight() * action.textScale / 2.0f - dp(4.66f);
++        if (circles()) {
++            circleRect(action, AndroidUtilities.rectTmp);
++            textY = AndroidUtilities.rectTmp.bottom + dp(2);
++        }
++
+         canvas.save();
+         canvas.scale(action.textScale, action.textScale, cx, textY + action.text.getHeight() * action.textScale / 2.0f);
+         action.text.draw(canvas, cx - action.text.getWidth() / 2f, textY, textColor, alpha);
+@@ -713,11 +830,17 @@ public class ProfileActionsView extends View {
+ 
+         switch (mode) {
+             case MODE_USER:
+-                insertIfAvailable(out, KEY_MESSAGE);
+-                insertIfAvailable(out, KEY_NOTIFICATION);
++                // v10.1 iOS order: call, video, mute, search, more (chat moves in only when calls are unavailable)
++                if (!allAvailableActions.contains(KEY_CALL)) insertIfAvailable(out, KEY_MESSAGE);
+                 insertIfAvailable(out, KEY_CALL);
+                 insertIfAvailable(out, KEY_VIDEO);
+-                insertIfNotAvailable(out, KEY_GIFT, KEY_VIDEO);
++                if (!allAvailableActions.contains(KEY_CALL) && !allAvailableActions.contains(KEY_VIDEO)) {
++                    insertIfAvailable(out, KEY_GIFT);
++                }
++                insertIfAvailable(out, KEY_NOTIFICATION);
++                out.add(getOrCreate(KEY_SEARCH));
++                out.add(getOrCreate(KEY_MORE));
++                while (out.size() > 5) out.remove(0);
+                 break;
+             case MODE_TOPIC:
+                 insertIfAvailable(out, KEY_MESSAGE);
+@@ -894,6 +1017,13 @@ public class ProfileActionsView extends View {
+                 newAction = new Action();
+                 updateNotification(newAction, false);
+                 break;
++            case KEY_SEARCH:
++                newAction = new Action(ActionButton.SEARCH);
++                break;
++            case KEY_MORE:
++                newAction = new Action(ActionButton.MORE);
++                newAction.setText(isRu() ? "ещё" : "more");
++                break;
+         }
+ 
+         if (newAction != null) {
+@@ -1231,7 +1361,9 @@ public class ProfileActionsView extends View {
+         SET_PHOTO(R.string.ProfileActionsEditPhoto2, R.drawable.filled_profile_photo, R.drawable.outline_profile_photo),
+         EDIT_USERNAME(R.string.ProfileActionsEditUsername, R.drawable.filled_profile_edit_24, R.drawable.outline_profile_edit_24),
+         EDIT_INFO(R.string.ProfileActionsEditInfo, R.drawable.filled_profile_edit_24, R.drawable.outline_profile_edit_24),
+-        SETTINGS(R.string.Settings, R.drawable.filled_profile_settings, R.drawable.outline_profile_settings),;
++        SETTINGS(R.string.Settings, R.drawable.filled_profile_settings, R.drawable.outline_profile_settings),
++        SEARCH(R.string.Search, R.drawable.msg_search, R.drawable.msg_search),
++        MORE(R.string.AccDescrMoreOptions, R.drawable.ic_ab_other, R.drawable.ic_ab_other),;
+ 
+         final @StringRes int title;
+         final @DrawableRes int filledIcon;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/SizeNotifierFrameLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/SizeNotifierFrameLayout.java
+index d9d6c04..5ebbe9e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/SizeNotifierFrameLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/SizeNotifierFrameLayout.java
+@@ -906,6 +906,8 @@ public class SizeNotifierFrameLayout extends FrameLayout implements Theme.Colora
+     private float lastDrawnBottomBlurOffset;
+     private float drawnBottomOffset;
+     private RenderNode[] blurNodes;
++    private RenderNode headerGlassNode;
++    private org.telegram.ui.Components.blur3.LiquidGlassEffect headerGlassEffect;
+     private boolean[] blurNodeInvalidatedThisFrame = new boolean[2];
+     private boolean[] blurNodeInvalidated = new boolean[2];
+     public static boolean drawingBlur;
+@@ -1024,6 +1026,37 @@ public class SizeNotifierFrameLayout extends FrameLayout implements Theme.Colora
+                 invalidateBlurredViews();
+             }
+ 
++            if (top && Build.VERSION.SDK_INT >= 33 && blurNodes[a] != null && blurAlpha < 255 && LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) && !rectTmp.isEmpty()) {
++                // liquid-glass mod: header rendered through the iOS-style glass shader (live backdrop, refracting bottom rim)
++                if (headerGlassNode == null) {
++                    headerGlassNode = new RenderNode("headerGlass");
++                    headerGlassEffect = new org.telegram.ui.Components.blur3.LiquidGlassEffect(headerGlassNode);
++                }
++                final int w = rectTmp.width(), h = rectTmp.height();
++                headerGlassNode.setPosition(0, 0, w, h);
++                RecordingCanvas rc = headerGlassNode.beginRecording();
++                rc.translate(-rectTmp.left, -rectTmp.top);
++                rc.save();
++                rc.translate(0, -y - getTranslationY());
++                rc.translate(0, -pad);
++                rc.scale(scale, scale);
++                blurNodes[a].setAlpha(1f);
++                rc.drawRenderNode(blurNodes[a]);
++                rc.restore();
++                final int scrimAlpha = blurScrimPaint.getAlpha();
++                blurScrimPaint.setAlpha((int) (scrimAlpha * 0.55f));
++                rc.drawRect(rectTmp, blurScrimPaint);
++                blurScrimPaint.setAlpha(scrimAlpha);
++                headerGlassNode.endRecording();
++                final float ext = dp(60);
++                final float th = Math.min(dp(14), h / 2.5f);
++                headerGlassEffect.update(-ext, -ext, w + ext, h, 0, 0, 0, 0, th, 0.8f, 1.5f, 0);
++                canvas.save();
++                canvas.translate(rectTmp.left, rectTmp.top);
++                canvas.drawRenderNode(headerGlassNode);
++                canvas.restore();
++                return;
++            }
+             canvas.save();
+             canvas.drawRect(rectTmp, blurScrimPaint);
+             canvas.clipRect(rectTmp);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/DownscaleScrollableNoiseSuppressor.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/DownscaleScrollableNoiseSuppressor.java
+index acc5040..5e58ca6 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/DownscaleScrollableNoiseSuppressor.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/DownscaleScrollableNoiseSuppressor.java
+@@ -352,7 +352,7 @@ public class DownscaleScrollableNoiseSuppressor {
+     private RenderNode getRenderNode(int a, int b) {
+         final SourcePart sourcePart = rectRenderNodes.get(b);
+         if (isLiquidGlassEnabled && sourcePart.renderNodesForGlass != null) {
+-            if (a == 0) {
++            if (a == 0 || android.os.Build.VERSION.SDK_INT >= 33) { // liquid-glass mod: no frosted variant
+                 return (sourcePart.renderNodesForGlass.renderNodeRestored[0]);
+             } else {
+                 return (sourcePart.renderNodesForBlur.renderNodeRestored[0]);
+@@ -409,8 +409,9 @@ public class DownscaleScrollableNoiseSuppressor {
+         private SourcePart() {
+             if (isLiquidGlassEnabled) {
+                 renderNodesForGlass = new DownscaledRenderNode("glass", 0, true);
+-                renderNodesForGlass.setScale(4, 4);
+-                renderNodesForGlass.setPrimaryEffectBlur(dpf2(6f), RenderNodeEffects.getSaturationX3RenderEffect());
++                // liquid-glass mod: clear glass - full resolution, no blur (refraction is done by the shader)
++                renderNodesForGlass.setScale(1, 1);
++                renderNodesForGlass.setPrimaryEffect(RenderNodeEffects.createSaturationXRenderEffect(1.1f));
+                 renderNodesForBlur = new DownscaledRenderNode("blur", 0);
+                 renderNodesForBlur.setScale(8, 8);
+                 renderNodesForBlur.setPrimaryEffectBlur(dpf2(40 - 1.66f));
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/LiquidGlassEffect.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/LiquidGlassEffect.java
+index 896fe6e..762d20d 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/LiquidGlassEffect.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/LiquidGlassEffect.java
+@@ -17,11 +17,85 @@ public class LiquidGlassEffect {
+     private final RuntimeShader shader;
+     private RenderEffect effect;
+ 
++    // liquid-glass mod: iOS 26-style shader (refraction + chromatic aberration + specular rim + inner shadow + tint)
++    private float preBlurRadius;
++    private float chroma = 0f;
++
++    // liquid-glass mod: shader status for the settings screen (null = not tested yet)
++    public static volatile String shaderStatus;
++
++    /** Compiles the iOS glass shader once and returns a human readable status. */
++    public static String testShader() {
++        if (shaderStatus != null) return shaderStatus;
++        if (android.os.Build.VERSION.SDK_INT < 33) return shaderStatus = "нужен Android 13+";
++        try {
++            RuntimeShader s = new RuntimeShader(AndroidUtilities.readRes(R.raw.ios_liquid_glass_shader));
++            s.setFloatUniform("chroma", 1f);
++            shaderStatus = "активен";
++        } catch (Throwable e) {
++            shaderStatus = "ошибка: " + e.getMessage();
++            android.util.Log.e("TGGlass", "liquid glass shader failed", e);
++        }
++        return shaderStatus;
++    }
++    private float specular = 1f;
++    private boolean iosShader;
++
+     public LiquidGlassEffect(RenderNode node) {
++        this(node, 0);
++    }
++
++    /** @param preBlurRadius if > 0, the backdrop is blurred by RenderEffect before the glass shader is applied */
++    public LiquidGlassEffect(RenderNode node, float preBlurRadius) {
+         this.node = node;
+-        final String code = AndroidUtilities.readRes(R.raw.liquid_glass_shader);
+-        shader = new RuntimeShader(code);
+-        node.setRenderEffect(effect = RenderEffect.createRuntimeShaderEffect(shader, "img"));
++        this.preBlurRadius = preBlurRadius;
++        RuntimeShader s;
++        boolean ios;
++        try {
++            s = new RuntimeShader(AndroidUtilities.readRes(R.raw.ios_liquid_glass_shader));
++            s.setFloatUniform("chroma", chroma);
++            s.setFloatUniform("specular", specular);
++            s.setFloatUniform("dark", 0f);
++            s.setFloatUniform("tint_scale", 0.45f);
++            ios = true;
++            shaderStatus = "активен";
++        } catch (Throwable e) {
++            shaderStatus = "ошибка: " + e.getMessage();
++            android.util.Log.e("TGGlass", "liquid glass shader failed", e);
++            // safety net: if the device's AGSL compiler rejects the new shader, keep Telegram's original one
++            org.telegram.messenger.FileLog.e(e);
++            s = new RuntimeShader(AndroidUtilities.readRes(R.raw.liquid_glass_shader));
++            ios = false;
++        }
++        shader = s;
++        iosShader = ios;
++        applyEffect();
++    }
++
++    private boolean surfaceTint;
++    /** liquid-glass mod: menus/sheets/dialogs use the full surface tint for readability */
++    public void setSurfaceTint(boolean full) {
++        if (!iosShader || surfaceTint == full) return;
++        surfaceTint = full;
++        shader.setFloatUniform("tint_scale", full ? 1f : 0.45f);
++        applyEffect();
++    }
++
++    public void setChroma(float chroma, float specular) {
++        this.chroma = chroma;
++        this.specular = specular;
++        if (!iosShader) return;
++        shader.setFloatUniform("chroma", chroma);
++        shader.setFloatUniform("specular", specular);
++        applyEffect();
++    }
++
++    private void applyEffect() {
++        RenderEffect e = RenderEffect.createRuntimeShaderEffect(shader, "img");
++        if (preBlurRadius > 0) {
++            e = RenderEffect.createChainEffect(e, RenderEffect.createBlurEffect(preBlurRadius, preBlurRadius, android.graphics.Shader.TileMode.CLAMP));
++        }
++        node.setRenderEffect(effect = e);
+     }
+ 
+     private float resolutionX, resolutionY;
+@@ -95,7 +169,9 @@ public class LiquidGlassEffect {
+             shader.setFloatUniform("refract_intensity", this.intensity = intensity);
+             shader.setFloatUniform("refract_index", this.index = index);
+             shader.setFloatUniform("foreground_color_premultiplied", r, g, b, a);
+-            node.setRenderEffect(effect = RenderEffect.createRuntimeShaderEffect(shader, "img"));
++            final boolean dark = Color.alpha(foregroundColor) > 0 && AndroidUtilities.computePerceivedBrightness(foregroundColor | 0xFF000000) < 0.5f;
++            if (iosShader) shader.setFloatUniform("dark", dark ? 1f : 0f);
++            applyEffect();
+         }
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/drawable/BlurredBackgroundDrawableRenderNode.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/drawable/BlurredBackgroundDrawableRenderNode.java
+index bff534c..b5441f2 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/drawable/BlurredBackgroundDrawableRenderNode.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/drawable/BlurredBackgroundDrawableRenderNode.java
+@@ -32,6 +32,8 @@ public class BlurredBackgroundDrawableRenderNode extends BlurredBackgroundDrawab
+     private final Paint paintStrokeBottom = new Paint(Paint.ANTI_ALIAS_FLAG);
+ 
+     private boolean renderNodeInvalidated;
++    // liquid-glass mod: sources whose content changes without notifying (bitmap snapshots) re-record every frame
++    public boolean rerecordEveryFrame;
+ 
+     public BlurredBackgroundDrawableRenderNode(BlurredBackgroundSource source) {
+         this.renderNode = new RenderNode("BlurredNode");
+@@ -116,8 +118,9 @@ public class BlurredBackgroundDrawableRenderNode extends BlurredBackgroundDrawab
+         c.translate(-sL, -sT);
+         if (liquidGlassEffect != null && Build.VERSION.SDK_INT >= 33) {
+             final int thickness = Math.max(Math.min(
+-                boundProps.liquidThickness <= 0 ? dp(11) : boundProps.liquidThickness,
+-                Math.min(boundProps.boundsWithPadding.width(), boundProps.boundsWithPadding.height()) / 5), 1);
++                // liquid-glass mod: wider lens bevel (iOS 26 look)
++                boundProps.liquidThickness <= 0 ? dp(20) : Math.max(boundProps.liquidThickness, dp(20)),
++                (int) (Math.min(boundProps.boundsWithPadding.width(), boundProps.boundsWithPadding.height()) / 2.4f)), 1);
+ 
+             liquidGlassEffect.update(
+                 0, 0, boundProps.boundsWithPadding.width(), boundProps.boundsWithPadding.height(),
+@@ -142,16 +145,20 @@ public class BlurredBackgroundDrawableRenderNode extends BlurredBackgroundDrawab
+                 c.drawColor(backgroundColor);
+             }
+         }
+-        if (strokeColorTop != 0) {
++        if (strokeColorTop != 0 && liquidGlassEffect == null) { // v10.1: no white rim on liquid glass
+             drawStroke(c, 0, 0, boundProps.boundsWithPadding.width(),
+                     boundProps.boundsWithPadding.height(), boundProps.radii,
+                     boundProps.strokeWidthTop, true, paintStrokeTop);
+         }
+-        if (strokeColorBottom != 0) {
++        if (strokeColorBottom != 0 && liquidGlassEffect == null) {
+             drawStroke(c, 0, 0, boundProps.boundsWithPadding.width(),
+                     boundProps.boundsWithPadding.height(), boundProps.radii,
+                     boundProps.strokeWidthBottom, false, paintStrokeBottom);
+         }
++        if (liquidGlassEffect != null || org.telegram.messenger.LiteMode.isEnabled(org.telegram.messenger.LiteMode.FLAG_LIQUID_GLASS)) { // v10.3: visible specular rim
++            org.telegram.ui.Components.glass.GlassRim.draw(c, 0, 0, boundProps.boundsWithPadding.width(),
++                boundProps.boundsWithPadding.height(), boundProps.radii[0], 1f);
++        }
+         renderNode.endRecording();
+     }
+ 
+@@ -177,6 +184,9 @@ public class BlurredBackgroundDrawableRenderNode extends BlurredBackgroundDrawab
+             return;
+         }
+ 
++        if (rerecordEveryFrame) {
++            renderNodeInvalidated = true;
++        }
+         if (!renderNode.hasDisplayList()) {
+             source.dispatchOnDrawablesRelativePositionChange();
+             updateDisplayList();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/drawable/BlurredBackgroundDrawableSource.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/drawable/BlurredBackgroundDrawableSource.java
+index effeace..09e45b9 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/drawable/BlurredBackgroundDrawableSource.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/drawable/BlurredBackgroundDrawableSource.java
+@@ -17,6 +17,9 @@ public class BlurredBackgroundDrawableSource extends BlurredBackgroundDrawable {
+     @Override
+     public void draw(@NonNull Canvas canvas) {
+         drawSource(canvas, source);
++        if (org.telegram.messenger.LiteMode.isEnabled(org.telegram.messenger.LiteMode.FLAG_LIQUID_GLASS) && !boundProps.boundsWithPadding.isEmpty()) {
++            org.telegram.ui.Components.glass.GlassRim.draw(canvas, new android.graphics.RectF(boundProps.boundsWithPadding), boundProps.radii[0], getAlpha() / 255f);
++        }
+     }
+ 
+     @Override
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/source/BlurredBackgroundSourceBitmap.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/source/BlurredBackgroundSourceBitmap.java
+index 9515392..798ff26 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/source/BlurredBackgroundSourceBitmap.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/blur3/source/BlurredBackgroundSourceBitmap.java
+@@ -69,6 +69,13 @@ public class BlurredBackgroundSourceBitmap implements BlurredBackgroundSource {
+ 
+     @Override
+     public BlurredBackgroundDrawable createDrawable() {
++        // liquid-glass mod: context menus / scrim surfaces get the iOS-style glass shader on Android 13+
++        if (android.os.Build.VERSION.SDK_INT >= 33 && org.telegram.messenger.LiteMode.isEnabled(org.telegram.messenger.LiteMode.FLAG_LIQUID_GLASS)) {
++            final org.telegram.ui.Components.blur3.drawable.BlurredBackgroundDrawableRenderNode d = new org.telegram.ui.Components.blur3.drawable.BlurredBackgroundDrawableRenderNode(this);
++            d.rerecordEveryFrame = true;
++            d.setLiquidGlassEffectAllowed();
++            return d;
++        }
+         return new BlurredBackgroundDrawableSource(this);
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/ChatInputViewsContainer.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/ChatInputViewsContainer.java
+index 78c3b9e..819b1bd 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/ChatInputViewsContainer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/ChatInputViewsContainer.java
+@@ -82,6 +82,32 @@ public class ChatInputViewsContainer extends FrameLayout {
+         blurredBackgroundDrawable.setRadius(dp(INPUT_BUBBLE_RADIUS));
+     }
+ 
++    // Telegram Glass v10.1: split island (round attach | pill | round mic/send), all liquid glass
++    public interface GlassSplitProvider {
++        boolean fill(RectF left, RectF right, View relativeTo);
++    }
++    private int inputBubbleAlpha = 255;
++    private GlassSplitProvider glassSplitProvider;
++    private BlurredBackgroundDrawable glassLeftDrawable, glassRightDrawable;
++    private final RectF glassLeft = new RectF(), glassRight = new RectF();
++
++    public void setGlassSplit(GlassSplitProvider provider, BlurredBackgroundDrawable left, BlurredBackgroundDrawable right) {
++        glassSplitProvider = provider;
++        glassLeftDrawable = left;
++        glassRightDrawable = right;
++        if (left != null) { left.setPadding(dp(7)); left.setRadius(dp(22)); }
++        if (right != null) { right.setPadding(dp(7)); right.setRadius(dp(22)); }
++    }
++
++    private void drawGlassCircle(Canvas canvas, BlurredBackgroundDrawable d, RectF r) {
++        if (d == null || r.isEmpty()) return;
++        final int p = dp(7);
++        d.setRadius(r.width() / 2f);
++        d.setBounds(Math.round(r.left) - p, Math.round(r.top) - p, Math.round(r.right) + p, Math.round(r.bottom) + p);
++        d.setAlpha(inputBubbleAlpha);
++        d.draw(canvas);
++    }
++
+     public void setUnderKeyboardBackgroundDrawable(BlurredBackgroundDrawable drawable) {
+         underKeyboardBackgroundDrawable = drawable;
+         underKeyboardBackgroundDrawable.enableInAppKeyboardOptimization();
+@@ -268,9 +294,25 @@ public class ChatInputViewsContainer extends FrameLayout {
+         tmpRect.inset(0, -dp(7));
+         tmpRect.offset(0, blurTop + (int) bubbleInputTranlationY);
+ 
++        boolean split = drawInputBackground && glassSplitProvider != null && glassLeftDrawable != null && glassRightDrawable != null
++            && glassSplitProvider.fill(glassLeft, glassRight, this);
++        if (split) {
++            final int gap = dp(6), p = dp(7);
++            if (!glassLeft.isEmpty()) {
++                tmpRect.left = Math.max(tmpRect.left, Math.round(glassLeft.right) + gap - p);
++            }
++            if (!glassRight.isEmpty()) {
++                tmpRect.right = Math.min(tmpRect.right, Math.round(glassRight.left) - gap + p);
++            }
++            if (tmpRect.width() <= p * 2 + dp(44)) split = false;
++        }
+         blurredBackgroundDrawable.setBounds(tmpRect);
+         if (drawInputBackground)
+             blurredBackgroundDrawable.draw(canvas);
++        if (split) {
++            drawGlassCircle(canvas, glassLeftDrawable, glassLeft);
++            drawGlassCircle(canvas, glassRightDrawable, glassRight);
++        }
+ 
+         if (needDrawInAppKeyboard) {
+             underKeyboardBackgroundDrawable.draw(canvas);
+@@ -320,6 +362,7 @@ public class ChatInputViewsContainer extends FrameLayout {
+     }
+ 
+     public void setInputBubbleAlpha(int alpha) {
++        inputBubbleAlpha = alpha;
+         if (blurredBackgroundDrawable != null) {
+             blurredBackgroundDrawable.setAlpha(alpha);
+         }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassApiDialog.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassApiDialog.java
+new file mode 100644
+index 0000000..dd9c762
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassApiDialog.java
+@@ -0,0 +1,110 @@
++package org.telegram.ui.Components.glass;
++
++import android.app.Activity;
++import android.content.Context;
++import android.content.Intent;
++import android.content.SharedPreferences;
++import android.net.Uri;
++import android.text.InputType;
++import android.text.method.LinkMovementMethod;
++import android.widget.EditText;
++import android.widget.LinearLayout;
++import android.widget.TextView;
++import android.widget.Toast;
++
++import org.telegram.messenger.AndroidUtilities;
++import org.telegram.messenger.BuildVars;
++import org.telegram.messenger.LocaleController;
++import org.telegram.ui.ActionBar.AlertDialog;
++import org.telegram.ui.ActionBar.Theme;
++
++/** Telegram Glass: dialog to enter the user's own api_id / api_hash (my.telegram.org/apps). */
++public class GlassApiDialog {
++
++    private static boolean ru() {
++        try { return LocaleController.getInstance().getCurrentLocale().getLanguage().startsWith("ru"); } catch (Throwable e) { return true; }
++    }
++
++    public static void show(Activity activity, boolean cancelable) {
++        if (activity == null) return;
++        final boolean ru = ru();
++        final SharedPreferences sp = activity.getSharedPreferences("glass_api", Context.MODE_PRIVATE);
++        LinearLayout ll = new LinearLayout(activity);
++        ll.setOrientation(LinearLayout.VERTICAL);
++        int pad = AndroidUtilities.dp(24);
++        ll.setPadding(pad, AndroidUtilities.dp(8), pad, 0);
++
++        TextView info = new TextView(activity);
++        info.setTextColor(Theme.getColor(Theme.key_dialogTextBlack));
++        info.setTextSize(14);
++        info.setText(ru
++            ? "Для работы Telegram Glass нужны ваши собственные api_id и api_hash.\n1. Откройте my.telegram.org/apps и войдите по номеру.\n2. Создайте приложение (любое название, платформа Android).\n3. Скопируйте App api_id и App api_hash сюда.\n\nEnglish: open my.telegram.org/apps, log in, create an app and paste its api_id and api_hash below."
++            : "Telegram Glass needs your own api_id and api_hash.\n1. Open my.telegram.org/apps and log in with your phone.\n2. Create an application (any name, platform Android).\n3. Paste App api_id and App api_hash below.");
++        ll.addView(info);
++
++        TextView link = new TextView(activity);
++        link.setText(ru ? "Открыть my.telegram.org/apps" : "Open my.telegram.org/apps");
++        link.setTextColor(Theme.getColor(Theme.key_dialogTextLink));
++        link.setTextSize(15);
++        link.setPadding(0, AndroidUtilities.dp(10), 0, AndroidUtilities.dp(6));
++        link.setOnClickListener(v -> {
++            try { activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://my.telegram.org/apps"))); } catch (Throwable ignore) {}
++        });
++        ll.addView(link);
++
++        final EditText id = new EditText(activity);
++        id.setHint("api_id");
++        id.setInputType(InputType.TYPE_CLASS_NUMBER);
++        id.setTextColor(Theme.getColor(Theme.key_dialogTextBlack));
++        id.setHintTextColor(Theme.getColor(Theme.key_dialogTextHint));
++        int cur = sp.getInt("api_id", 0);
++        if (cur > 0) id.setText(String.valueOf(cur));
++        ll.addView(id);
++
++        final EditText hash = new EditText(activity);
++        hash.setHint("api_hash");
++        hash.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
++        hash.setTextColor(Theme.getColor(Theme.key_dialogTextBlack));
++        hash.setHintTextColor(Theme.getColor(Theme.key_dialogTextHint));
++        hash.setText(sp.getString("api_hash", ""));
++        ll.addView(hash);
++
++        AlertDialog.Builder b = new AlertDialog.Builder(activity);
++        b.setTitle("API ID / API Hash");
++        b.setView(ll);
++        b.setPositiveButton(ru ? "Сохранить" : "Save", (d, w) -> {
++            int newId = 0;
++            try { newId = Integer.parseInt(id.getText().toString().trim()); } catch (Throwable ignore) {}
++            String newHash = hash.getText().toString().trim().toLowerCase();
++            if (newId <= 0 || !newHash.matches("[0-9a-f]{32}")) {
++                Toast.makeText(activity, ru ? "Неверный api_id или api_hash (32 символа 0-9a-f)" : "Invalid api_id or api_hash (32 hex chars)", Toast.LENGTH_LONG).show();
++                AndroidUtilities.runOnUIThread(() -> show(activity, cancelable), 300);
++                return;
++            }
++            sp.edit().putInt("api_id", newId).putString("api_hash", newHash).commit();
++            Toast.makeText(activity, ru ? "Сохранено, перезапуск…" : "Saved, restarting…", Toast.LENGTH_SHORT).show();
++            restart(activity);
++        });
++        if (cancelable) b.setNegativeButton(ru ? "Отмена" : "Cancel", null);
++        AlertDialog dlg = b.create();
++        dlg.setCanceledOnTouchOutside(cancelable);
++        dlg.setCancelable(cancelable);
++        dlg.show();
++    }
++
++    private static void restart(Activity activity) {
++        AndroidUtilities.runOnUIThread(() -> {
++            try {
++                Intent i = activity.getPackageManager().getLaunchIntentForPackage(activity.getPackageName());
++                if (i != null) {
++                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
++                    android.app.PendingIntent pi = android.app.PendingIntent.getActivity(activity, 7344, i, android.app.PendingIntent.FLAG_IMMUTABLE | android.app.PendingIntent.FLAG_CANCEL_CURRENT);
++                    android.app.AlarmManager am = (android.app.AlarmManager) activity.getSystemService(Context.ALARM_SERVICE);
++                    am.set(android.app.AlarmManager.RTC, System.currentTimeMillis() + 600, pi);
++                }
++            } catch (Throwable ignore) {}
++            android.os.Process.killProcess(android.os.Process.myPid());
++            System.exit(0);
++        }, 700);
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassBackdropView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassBackdropView.java
+new file mode 100644
+index 0000000..a9897f6
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassBackdropView.java
+@@ -0,0 +1,98 @@
++package org.telegram.ui.Components.glass;
++
++import android.content.Context;
++import android.graphics.Bitmap;
++import android.graphics.Canvas;
++import android.graphics.Color;
++import android.graphics.Paint;
++import android.graphics.PorterDuff;
++import android.graphics.PorterDuffColorFilter;
++import android.graphics.RadialGradient;
++import android.graphics.RectF;
++import android.graphics.Shader;
++import android.os.SystemClock;
++import android.view.View;
++
++import androidx.core.graphics.ColorUtils;
++
++import org.telegram.messenger.AndroidUtilities;
++
++/** Telegram Glass: animated collectible-style backdrop covering the whole profile (radial glow + rings of themed icons + shimmer). */
++public class GlassBackdropView extends View {
++    private final long uid;
++    private final View avatar;
++    private final Paint fill = new Paint();
++    private final Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Paint icon = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
++    private final RectF r = new RectF();
++    private final int[] la = new int[2], lb = new int[2];
++    private final long start = SystemClock.elapsedRealtime();
++    private int bg = -1, ver = -1;
++    private final Paint shape = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private int shapeColor = Color.WHITE;
++    private int[] gifts;
++    private float lastCx = -1, lastCy = -1; private int lastH;
++
++    public GlassBackdropView(Context c, long uid, View avatar) {
++        super(c);
++        this.uid = uid;
++        this.avatar = avatar;
++    }
++
++    public boolean isActiveNow() { return GlassDecor.isActive(uid); }
++
++    @Override
++    protected void onDraw(Canvas canvas) {
++        if (ver != GlassDecor.version) { ver = GlassDecor.version; bg = GlassDecor.getBackground(uid); lastH = -1; }
++        if (bg < 0 || bg >= GlassDecor.BG_COLORS.length) return;
++        final int W = getWidth(), H = getHeight();
++        final int c0 = GlassDecor.BG_COLORS[bg][0], c1 = GlassDecor.BG_COLORS[bg][1];
++        float cx = W / 2f, cy = AndroidUtilities.dp(190);
++        if (avatar != null && avatar.isAttachedToWindow() && avatar.getWidth() > 0) {
++            getLocationInWindow(la); avatar.getLocationInWindow(lb);
++            final float aw = avatar.getWidth() * avatar.getScaleX();
++            if (aw < AndroidUtilities.dp(150)) { cx = lb[0] - la[0] + aw / 2f; cy = lb[1] - la[1] + avatar.getHeight() * avatar.getScaleY() / 2f; }
++        }
++        if (Math.abs(cx - lastCx) > 1 || Math.abs(cy - lastCy) > 1 || lastH != H) {
++            lastCx = cx; lastCy = cy; lastH = H;
++            fill.setShader(new RadialGradient(cx, cy, Math.max(H * 0.75f, 1), new int[]{c0, ColorUtils.blendARGB(c0, c1, 0.5f), c1}, new float[]{0f, 0.45f, 1f}, Shader.TileMode.CLAMP));
++            glow.setShader(new RadialGradient(cx, cy, Math.max(H * 0.3f, 1), new int[]{ColorUtils.setAlphaComponent(ColorUtils.blendARGB(c0, Color.WHITE, 0.45f), 120), 0}, null, Shader.TileMode.CLAMP));
++            shapeColor = ColorUtils.blendARGB(c0, Color.WHITE, 0.6f);
++            icon.setColorFilter(new PorterDuffColorFilter(ColorUtils.blendARGB(c0, Color.WHITE, 0.6f), PorterDuff.Mode.SRC_IN));
++        }
++        canvas.drawRect(0, 0, W, H, fill);
++        canvas.drawRect(0, 0, W, H, glow);
++        final float t = (SystemClock.elapsedRealtime() - start) / 1000f;
++        final float dp = AndroidUtilities.density;
++        final float ar = AndroidUtilities.dp(48);
++        for (int k = 0; k < 7; k++) {
++            final float rad = ar + 64 * dp + k * 58 * dp;
++            final int n = Math.max(6, (int) (2 * Math.PI * rad / (74 * dp)));
++            final float s = (28 - 2 * k) * dp;
++            for (int i = 0; i < n; i++) {
++                final double a = 2 * Math.PI * i / n + (k % 2) * Math.PI / n + t * 0.05f * (k % 2 == 1 ? 1 : -1);
++                final float px = cx + rad * (float) Math.cos(a), py = cy + rad * (float) Math.sin(a);
++                if (px < -s || py < -s || px > W + s || py > H + s) continue;
++                final float wave = 0.6f + 0.4f * (float) Math.sin(t * 1.5f - rad / (60 * dp));
++                final float al = 0.55f * (1f - k / 7.5f) * wave;
++                shape.setColor(shapeColor);
++                shape.setAlpha((int) (200 * al));
++                final int kind = (i + k) % 3;
++                if (kind == 0) { // soft dot
++                    shape.setStyle(Paint.Style.FILL);
++                    canvas.drawCircle(px, py, s * 0.22f, shape);
++                } else if (kind == 1) { // ring
++                    shape.setStyle(Paint.Style.STROKE); shape.setStrokeWidth(1.6f * dp);
++                    canvas.drawCircle(px, py, s * 0.32f, shape);
++                } else { // rotated diamond
++                    shape.setStyle(Paint.Style.FILL);
++                    canvas.save(); canvas.rotate(45 + t * 8f, px, py);
++                    r.set(px - s * 0.2f, py - s * 0.2f, px + s * 0.2f, py + s * 0.2f);
++                    canvas.drawRoundRect(r, 2 * dp, 2 * dp, shape);
++                    canvas.restore();
++                }
++            }
++        }
++        postInvalidateDelayed(33);
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassBgPicker.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassBgPicker.java
+new file mode 100644
+index 0000000..5280ee1
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassBgPicker.java
+@@ -0,0 +1,30 @@
++package org.telegram.ui.Components.glass;
++
++import android.content.Context;
++import android.widget.Toast;
++
++import org.telegram.ui.ActionBar.AlertDialog;
++
++/** Telegram Glass v11.1: simple background picker dialog (saved immediately as bg_<uid>). */
++public final class GlassBgPicker {
++    public static void show(Context ctx, long uid, Runnable onChanged) {
++        if (ctx == null) return;
++        if (uid == 0) uid = GlassDecor.self();
++        final long u = uid;
++        final int cur = GlassDecor.getBackground(u);
++        final int n = GlassDecor.BG_NAMES_RU.length;
++        CharSequence[] items = new CharSequence[n + 1];
++        items[0] = (cur < 0 ? "✓  " : "      ") + "Стандартный";
++        for (int i = 0; i < n; i++) items[i + 1] = (cur == i ? "✓  " : "      ") + GlassDecor.BG_NAMES_RU[i];
++        AlertDialog.Builder b = new AlertDialog.Builder(ctx);
++        b.setTitle(u == GlassDecor.self() ? "Фон моего профиля" : "Фон этого профиля");
++        b.setItems(items, (d, which) -> {
++            final int idx = which - 1;
++            GlassDecor.setBackground(u, idx);
++            Toast.makeText(ctx, idx < 0 ? "Стандартный фон" : "Фон выбран: " + GlassDecor.BG_NAMES_RU[idx], Toast.LENGTH_SHORT).show();
++            if (onChanged != null) onChanged.run();
++        });
++        b.setNegativeButton("Отмена", null);
++        b.show();
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassDecor.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassDecor.java
+new file mode 100644
+index 0000000..16f9014
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassDecor.java
+@@ -0,0 +1,94 @@
++package org.telegram.ui.Components.glass;
++
++import android.content.Context;
++import android.content.SharedPreferences;
++import android.graphics.Bitmap;
++import android.graphics.BitmapFactory;
++
++import org.telegram.messenger.ApplicationLoader;
++import org.telegram.messenger.R;
++import org.telegram.messenger.UserConfig;
++
++/**
++ * Telegram Glass: local-only profile decorations (animated backdrop + decorative gifts), stored per user id.
++ * Own profile: your choice. Other users: none by default, can be chosen per profile. Nothing is sent to the server.
++ */
++public final class GlassDecor {
++    public static final String[] BG_NAMES_RU = {"Фиолетовый", "Зелёный", "Синий", "Розовый", "Бирюзовый", "Тёмный", "Закат", "Океан"};
++    /** center (bright) / edge (dark) colors of the backdrop */
++    public static final int[][] BG_COLORS = {
++        {0xFFCC6BFA, 0xFF330B73}, {0xFF6BDB73, 0xFF08381F}, {0xFF52ADFF, 0xFF081A61},
++        {0xFFFF7ABD, 0xFF540836}, {0xFF52E6D1, 0xFF053642}, {0xFF524A7A, 0xFF05050A},
++        {0xFFFFA85C, 0xFF57123D}, {0xFF42CCF2, 0xFF12124D}};
++    public static final int[] GIFT_RES = {R.drawable.glass_gift_star, R.drawable.glass_gift_heart, R.drawable.glass_gift_crown, R.drawable.glass_gift_diamond,
++        R.drawable.glass_gift_moon, R.drawable.glass_gift_flower, R.drawable.glass_gift_clover, R.drawable.glass_gift_cat,
++        R.drawable.glass_gift_rocket, R.drawable.glass_gift_gift, R.drawable.glass_gift_bolt, R.drawable.glass_gift_note};
++    public static final int[] EMBLEM_RES = {R.drawable.glass_emblem_star, R.drawable.glass_emblem_heart, R.drawable.glass_emblem_crown, R.drawable.glass_emblem_diamond,
++        R.drawable.glass_emblem_moon, R.drawable.glass_emblem_flower, R.drawable.glass_emblem_clover, R.drawable.glass_emblem_cat,
++        R.drawable.glass_emblem_rocket, R.drawable.glass_emblem_gift, R.drawable.glass_emblem_bolt, R.drawable.glass_emblem_note};
++    public static final int[] GIFT_COLORS = {0xFFFFD34A, 0xFFFF4F7B, 0xFFFFA43A, 0xFF46E3F5, 0xFF7B6BFF, 0xFFFF5FC8,
++        0xFF4CF06A, 0xFFC56BFF, 0xFFFF6A3D, 0xFF4F9BFF, 0xFFFFF04A, 0xFF3FF0C0};
++
++    private static SharedPreferences prefs() {
++        return ApplicationLoader.applicationContext.getSharedPreferences("glass_decor", Context.MODE_PRIVATE);
++    }
++    public static long self() { return UserConfig.getInstance(UserConfig.selectedAccount).getClientUserId(); }
++    private static boolean isSelf(long uid) { return uid == 0 || uid == self(); }
++
++    /** -1 = standard Telegram look */
++    public static int getBackground(long uid) { return prefs().getInt("bg_" + uid, isSelf(uid) ? prefs().getInt("bg", 0) : -1); }
++    public static void setBackground(long uid, int i) { prefs().edit().putInt("bg_" + uid, i).apply(); version++; }
++    public static boolean giftsEnabled(long uid) { return prefs().getBoolean("gifts_" + uid, isSelf(uid) && prefs().getBoolean("gifts", true)); }
++    public static void setGiftsEnabled(long uid, boolean v) { prefs().edit().putBoolean("gifts_" + uid, v).apply(); version++; }
++    public static int giftsMask(long uid) { return prefs().getInt("gifts_mask_" + uid, 0b1011); }
++    public static void setGiftsMask(long uid, int m) { prefs().edit().putInt("gifts_mask_" + uid, m).apply(); version++; }
++    public static boolean isActive(long uid) { int b = getBackground(uid); return b >= 0 && b < BG_COLORS.length; }
++    /** bumps on every change so views can re-read */
++    public static volatile int version;
++
++    private static final Bitmap[] giftBitmaps = new Bitmap[GIFT_RES.length];
++    private static final Bitmap[] emblemBitmaps = new Bitmap[EMBLEM_RES.length];
++    public static Bitmap gift(int i) {
++        if (giftBitmaps[i] == null) {
++            try { giftBitmaps[i] = BitmapFactory.decodeResource(ApplicationLoader.applicationContext.getResources(), GIFT_RES[i]); } catch (Throwable ignore) {}
++        }
++        return giftBitmaps[i];
++    }
++    public static Bitmap emblem(int i) {
++        if (emblemBitmaps[i] == null) {
++            try { emblemBitmaps[i] = BitmapFactory.decodeResource(ApplicationLoader.applicationContext.getResources(), EMBLEM_RES[i]); } catch (Throwable ignore) {}
++        }
++        return emblemBitmaps[i];
++    }
++    public static int[] selectedGifts(long uid, int max) {
++        int m = giftsMask(uid); int[] tmp = new int[GIFT_RES.length]; int n = 0;
++        for (int i = 0; i < GIFT_RES.length && n < max; i++) if ((m & (1 << i)) != 0) tmp[n++] = i;
++        if (n == 0) { tmp[0] = 0; tmp[1] = 1; tmp[2] = 3; n = 3; }
++        int[] r = new int[n]; System.arraycopy(tmp, 0, r, 0, n); return r;
++    }
++
++    /** ResourcesProvider wrapper: makes the profile list transparent / glassy over the backdrop with light text. */
++    public static org.telegram.ui.ActionBar.Theme.ResourcesProvider wrap(final org.telegram.ui.ActionBar.Theme.ResourcesProvider base) {
++        return new org.telegram.ui.ActionBar.Theme.ResourcesProvider() {
++            @Override
++            public int getColor(int key) {
++                if (key == org.telegram.ui.ActionBar.Theme.key_windowBackgroundGray || key == org.telegram.ui.ActionBar.Theme.key_windowBackgroundGrayShadow) return 0;
++                if (key == org.telegram.ui.ActionBar.Theme.key_windowBackgroundWhite) return 0x33000000;
++                if (key == org.telegram.ui.ActionBar.Theme.key_windowBackgroundWhiteBlackText) return 0xFFFFFFFF;
++                if (key == org.telegram.ui.ActionBar.Theme.key_windowBackgroundWhiteGrayText || key == org.telegram.ui.ActionBar.Theme.key_windowBackgroundWhiteGrayText2
++                    || key == org.telegram.ui.ActionBar.Theme.key_windowBackgroundWhiteGrayText3 || key == org.telegram.ui.ActionBar.Theme.key_windowBackgroundWhiteGrayText4) return 0xB3FFFFFF;
++                if (key == org.telegram.ui.ActionBar.Theme.key_windowBackgroundWhiteBlueText || key == org.telegram.ui.ActionBar.Theme.key_windowBackgroundWhiteBlueText2
++                    || key == org.telegram.ui.ActionBar.Theme.key_windowBackgroundWhiteBlueHeader) return 0xFFD6ECFF;
++                if (key == org.telegram.ui.ActionBar.Theme.key_divider) return 0x22FFFFFF;
++                if (key == org.telegram.ui.ActionBar.Theme.key_windowBackgroundWhiteGrayIcon) return 0xCCFFFFFF;
++                return base != null ? base.getColor(key) : org.telegram.ui.ActionBar.Theme.getColor(key);
++            }
++            @Override
++            public android.graphics.drawable.Drawable getDrawable(String drawableKey) { return base != null ? base.getDrawable(drawableKey) : null; }
++            @Override
++            public android.graphics.Paint getPaint(String paintKey) { return base != null ? base.getPaint(paintKey) : org.telegram.ui.ActionBar.Theme.getThemePaint(paintKey); }
++            @Override
++            public boolean isDark() { return true; }
++        };
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassRim.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassRim.java
+new file mode 100644
+index 0000000..1eacebb
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassRim.java
+@@ -0,0 +1,37 @@
++package org.telegram.ui.Components.glass;
++
++import android.graphics.Canvas;
++import android.graphics.LinearGradient;
++import android.graphics.Paint;
++import android.graphics.RectF;
++import android.graphics.Shader;
++
++import org.telegram.messenger.AndroidUtilities;
++
++/** Telegram Glass v10.3: iOS 26-style specular rim drawn as a gradient canvas stroke. */
++public final class GlassRim {
++    private static final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private static final RectF r = new RectF();
++    static { paint.setStyle(Paint.Style.STROKE); }
++
++    public static void draw(Canvas canvas, RectF bounds, float radius, float alpha) {
++        if (bounds == null || bounds.width() < 2 || bounds.height() < 2 || alpha <= 0.01f) return;
++        final float sw = AndroidUtilities.dpf2(1.25f);
++        r.set(bounds);
++        r.inset(sw / 2f, sw / 2f);
++        final int a1 = (int) (0.50f * 255 * Math.min(1f, alpha));
++        final int a3 = (int) (0.30f * 255 * Math.min(1f, alpha));
++        final int a2 = (int) (0.04f * 255 * Math.min(1f, alpha));
++        paint.setStrokeWidth(sw);
++        paint.setShader(new LinearGradient(r.left, r.top, r.right, r.bottom,
++            new int[]{a1 << 24 | 0xFFFFFF, a2 << 24 | 0xFFFFFF, a2 << 24 | 0xFFFFFF, a3 << 24 | 0xFFFFFF},
++            new float[]{0f, 0.35f, 0.65f, 1f}, Shader.TileMode.CLAMP));
++        final float rr = Math.max(0, Math.min(radius - sw / 2f, Math.min(r.width(), r.height()) / 2f));
++        canvas.drawRoundRect(r, rr, rr, paint);
++    }
++
++    public static void draw(Canvas canvas, float l, float t, float rgt, float b, float radius, float alpha) {
++        RectF x = new RectF(l, t, rgt, b);
++        draw(canvas, x, radius, alpha);
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/LiquidGlassBackdrop.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/LiquidGlassBackdrop.java
+new file mode 100644
+index 0000000..c43bb32
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/LiquidGlassBackdrop.java
+@@ -0,0 +1,297 @@
++package org.telegram.ui.Components.glass;
++
++import static org.telegram.messenger.AndroidUtilities.dp;
++
++import android.graphics.Bitmap;
++import android.graphics.BitmapShader;
++import android.graphics.Canvas;
++import android.graphics.Color;
++import android.graphics.LinearGradient;
++import android.graphics.Matrix;
++import android.graphics.Paint;
++import android.graphics.Path;
++import android.graphics.RectF;
++import android.graphics.Shader;
++import android.view.View;
++
++import androidx.core.graphics.ColorUtils;
++
++import org.telegram.messenger.AndroidUtilities;
++import org.telegram.messenger.FileLog;
++import org.telegram.messenger.LiteMode;
++import org.telegram.messenger.SharedConfig;
++
++import java.util.ArrayList;
++import java.util.Collections;
++
++/**
++ * "Liquid glass" backdrop for floating surfaces that live in their own window
++ * (popup menus, bottom sheets, alert dialogs).
++ *
++ * Content of other windows can not be sampled from a separate window on every Android version,
++ * so on show we take a down-scaled snapshot of everything currently on screen
++ * ({@link AndroidUtilities#makeGlobalBlurBitmap}), blur it with Telegram's native stack blur
++ * and then draw the part of it that lies behind the host view, followed by:
++ *  - a translucent tint of the surface color (frosted look, readable text),
++ *  - a soft vertical highlight gradient (light falling on the top edge of the glass),
++ *  - a thin gradient rim stroke (specular edge that gives the glass its "thickness").
++ * The shadow is provided by the original nine-patch background drawn underneath.
++ *
++ * Works on every API level (pure Canvas + CPU blur). Controlled by
++ * {@link LiteMode#FLAG_GLASS_SURFACES}.
++ */
++public class LiquidGlassBackdrop {
++
++    public static final float DOWNSCALE = 8f;
++    private static final int BLUR_AMOUNT = 9;
++
++    public static boolean isEnabled() {
++        return LiteMode.isEnabled(LiteMode.FLAG_GLASS_SURFACES) && SharedConfig.getDevicePerformanceClass() >= SharedConfig.PERFORMANCE_CLASS_AVERAGE;
++    }
++
++    private Bitmap bitmap;
++    private BitmapShader shader;
++    private final Matrix matrix = new Matrix();
++    private final Paint blurPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
++    private final Paint tintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Paint highlightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Matrix gradientMatrix = new Matrix();
++    private LinearGradient highlightGradient, rimGradient;
++    private boolean gradientsForDark;
++    private final int[] location = new int[2];
++    private final Path path = new Path();
++    private final float[] radii = new float[8];
++    private final RectF rimRect = new RectF();
++
++    public LiquidGlassBackdrop() {
++        rimPaint.setStyle(Paint.Style.STROKE);
++    }
++
++    public boolean hasBitmap() {
++        return bitmap != null && !bitmap.isRecycled() || hwBitmap != null && !hwBitmap.isRecycled();
++    }
++
++    // ---- Android 13+: real lens glass (AGSL RuntimeShader via RenderEffect) over a PixelCopy snapshot ----
++    private static final float HW_SCALE = 2f;
++    private Bitmap hwBitmap;
++    private final int[] decorLocation = new int[2];
++    private android.graphics.RenderNode hwNode;
++    private org.telegram.ui.Components.blur3.LiquidGlassEffect hwEffect;
++    private final Paint hwBitmapPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
++    private View lastHost;
++    private int captureId;
++
++    /**
++     * Snapshot the activity window behind the glass. On Android 13+ uses PixelCopy (exact GPU frame, async) and the
++     * glass shader; on older versions falls back to {@link #capture(View)} (CPU blur).
++     */
++    public void capture(View exclude, android.content.Context context) {
++        if (!isEnabled()) {
++            return;
++        }
++        if (android.os.Build.VERSION.SDK_INT >= 33 && LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS)) {
++            final android.app.Activity activity = AndroidUtilities.findActivity(context);
++            if (activity != null && activity.getWindow() != null) {
++                final android.view.Window window = activity.getWindow();
++                final View decor = window.getDecorView();
++                final int w = (int) (decor.getWidth() / HW_SCALE), h = (int) (decor.getHeight() / HW_SCALE);
++                if (w > 0 && h > 0) {
++                    try {
++                        final Bitmap target = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
++                        final int id = ++captureId;
++                        final int[] loc = new int[2];
++                        decor.getLocationOnScreen(loc);
++                        android.view.PixelCopy.request(window, target, result -> {
++                            if (id != captureId || result != android.view.PixelCopy.SUCCESS) {
++                                target.recycle();
++                                if (result != android.view.PixelCopy.SUCCESS && id == captureId) {
++                                    capture(exclude);
++                                    if (lastHost != null) lastHost.invalidate();
++                                }
++                                return;
++                            }
++                            if (hwBitmap != null) {
++                                hwBitmap.recycle();
++                            }
++                            hwBitmap = target;
++                            decorLocation[0] = loc[0];
++                            decorLocation[1] = loc[1];
++                            if (lastHost != null) {
++                                lastHost.invalidate();
++                            }
++                        }, new android.os.Handler(android.os.Looper.getMainLooper()));
++                        return;
++                    } catch (Throwable e) {
++                        FileLog.e(e);
++                    }
++                }
++            }
++        }
++        capture(exclude);
++    }
++
++    public void setHost(View host) {
++        lastHost = host;
++    }
++
++    private boolean drawHw(Canvas canvas, View host, RectF rect, float rLT, float rRT, float rRB, float rLB, int surfaceColor, int alpha) {
++        if (android.os.Build.VERSION.SDK_INT < 33 || hwBitmap == null || hwBitmap.isRecycled() || !canvas.isHardwareAccelerated()) {
++            return false;
++        }
++        final int w = (int) Math.ceil(rect.width()), h = (int) Math.ceil(rect.height());
++        if (hwNode == null) {
++            hwNode = new android.graphics.RenderNode("liquidGlassBackdrop");
++            hwEffect = new org.telegram.ui.Components.blur3.LiquidGlassEffect(hwNode, 0);
++        }
++        host.getLocationOnScreen(location);
++        hwNode.setPosition(0, 0, w, h);
++        final android.graphics.RecordingCanvas rc = hwNode.beginRecording();
++        rc.translate(decorLocation[0] - (location[0] + rect.left), decorLocation[1] - (location[1] + rect.top));
++        rc.scale(HW_SCALE, HW_SCALE);
++        rc.drawBitmap(hwBitmap, 0, 0, hwBitmapPaint);
++        hwNode.endRecording();
++
++        final boolean dark = AndroidUtilities.computePerceivedBrightness(surfaceColor) < 0.721f;
++        final int tint = ColorUtils.setAlphaComponent(surfaceColor, (int) (255 * (dark ? 0.55f : 0.50f)));
++        final float th = Math.min(dp(22), Math.min(w, h) / 2.4f);
++        hwEffect.update(0, 0, w, h, rLT, rRT, rRB, rLB, th, 0.85f, 1.5f, tint);
++        hwNode.setAlpha(alpha / 255f);
++        canvas.save();
++        canvas.translate(rect.left, rect.top);
++        canvas.drawRenderNode(hwNode);
++        canvas.restore();
++        return true;
++    }
++
++    /**
++     * Snapshot the screen behind. {@code exclude} is the root view of the window that hosts the glass
++     * (may be null if that window is not attached yet).
++     */
++    public void capture(View exclude) {
++        if (!isEnabled() || AndroidUtilities.makingGlobalBlurBitmap) {
++            return;
++        }
++        try {
++            AndroidUtilities.makeGlobalBlurBitmap(b -> {
++                releaseCpu();
++                if (b == null) {
++                    return;
++                }
++                bitmap = b;
++                shader = new BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
++                blurPaint.setShader(shader);
++            }, DOWNSCALE, BLUR_AMOUNT, null, exclude == null ? null : new ArrayList<>(Collections.singletonList(exclude)));
++        } catch (Throwable e) {
++            FileLog.e(e);
++        }
++    }
++
++    public void release() {
++        captureId++;
++        if (hwBitmap != null) {
++            hwBitmap.recycle();
++            hwBitmap = null;
++        }
++        if (hwNode != null) {
++            hwNode.discardDisplayList();
++        }
++        blurPaint.setShader(null);
++        shader = null;
++        if (bitmap != null) {
++            bitmap.recycle();
++            bitmap = null;
++        }
++    }
++
++    public boolean draw(Canvas canvas, View host, RectF rect, float radius, int surfaceColor, int alpha) {
++        return draw(canvas, host, rect, radius, radius, radius, radius, surfaceColor, alpha);
++    }
++
++    /**
++     * Draws the glass into {@code rect} (in {@code host}'s local coordinates).
++     * @return false if there is nothing to draw (no snapshot) and the caller should keep its opaque background
++     */
++    public boolean draw(Canvas canvas, View host, RectF rect, float rLT, float rRT, float rRB, float rLB, int surfaceColor, int alpha) {
++        if (host == null || rect.width() <= 0 || rect.height() <= 0 || alpha <= 0) {
++            return false;
++        }
++        lastHost = host;
++        if (drawHw(canvas, host, rect, rLT, rRT, rRB, rLB, surfaceColor, alpha)) {
++            return true;
++        }
++        if (bitmap == null || bitmap.isRecycled() || shader == null) {
++            return false;
++        }
++        host.getLocationOnScreen(location);
++        matrix.reset();
++        matrix.postScale(DOWNSCALE, DOWNSCALE);
++        matrix.postTranslate(-location[0], -location[1]);
++        shader.setLocalMatrix(matrix);
++
++        radii[0] = radii[1] = rLT;
++        radii[2] = radii[3] = rRT;
++        radii[4] = radii[5] = rRB;
++        radii[6] = radii[7] = rLB;
++        path.rewind();
++        path.addRoundRect(rect, radii, Path.Direction.CW);
++
++        // 1. blurred content behind
++        blurPaint.setAlpha(alpha);
++        canvas.drawPath(path, blurPaint);
++
++        // 2. frosted tint
++        final boolean dark = AndroidUtilities.computePerceivedBrightness(surfaceColor) < 0.721f;
++        final float tintOpacity = dark ? 0.70f : 0.72f;
++        tintPaint.setColor(ColorUtils.setAlphaComponent(surfaceColor, (int) (Color.alpha(surfaceColor) * tintOpacity * alpha / 255f)));
++        canvas.drawPath(path, tintPaint);
++
++        // 3. top highlight + 4. rim light
++        ensureGradients(dark);
++        gradientMatrix.reset();
++        gradientMatrix.postScale(1f, Math.max(1f, rect.height()));
++        gradientMatrix.postTranslate(0, rect.top);
++        highlightGradient.setLocalMatrix(gradientMatrix);
++        rimGradient.setLocalMatrix(gradientMatrix);
++        highlightPaint.setAlpha(alpha);
++        canvas.drawPath(path, highlightPaint);
++
++        final float stroke = Math.max(1f, dp(0.75f));
++        rimPaint.setStrokeWidth(stroke);
++        rimPaint.setAlpha(alpha);
++        rimRect.set(rect);
++        rimRect.inset(stroke / 2f, stroke / 2f);
++        for (int i = 0; i < 8; ++i) {
++            radii[i] = Math.max(0, radii[i] - stroke / 2f);
++        }
++        path.rewind();
++        path.addRoundRect(rimRect, radii, Path.Direction.CW);
++        // v10.1: no white rim stroke
++        return true;
++    }
++
++    private void ensureGradients(boolean dark) {
++        if (highlightGradient != null && gradientsForDark == dark) {
++            return;
++        }
++        gradientsForDark = dark;
++        // unit-height vertical gradients, scaled to the rect via local matrix
++        highlightGradient = new LinearGradient(0, 0, 0, 1,
++            new int[] { Color.argb(dark ? 0x1C : 0x40, 255, 255, 255), Color.argb(0, 255, 255, 255), Color.argb(dark ? 0x0A : 0x00, 0, 0, 0) },
++            new float[] { 0f, 0.45f, 1f }, Shader.TileMode.CLAMP);
++        highlightPaint.setShader(highlightGradient);
++        rimGradient = new LinearGradient(0, 0, 0, 1,
++            new int[] { Color.argb(dark ? 0x52 : 0xA0, 255, 255, 255), Color.argb(dark ? 0x14 : 0x30, 255, 255, 255), Color.argb(dark ? 0x26 : 0x1C, dark ? 255 : 0, dark ? 255 : 0, dark ? 255 : 0) },
++            new float[] { 0f, 0.5f, 1f }, Shader.TileMode.CLAMP);
++        rimPaint.setShader(rimGradient);
++    }
++
++    private void releaseCpu() {
++        blurPaint.setShader(null);
++        shader = null;
++        if (bitmap != null) {
++            bitmap.recycle();
++            bitmap = null;
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/LiquidGlassSheetDrawable.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/LiquidGlassSheetDrawable.java
+new file mode 100644
+index 0000000..58da023
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/LiquidGlassSheetDrawable.java
+@@ -0,0 +1,86 @@
++package org.telegram.ui.Components.glass;
++
++import static org.telegram.messenger.AndroidUtilities.dp;
++
++import android.graphics.Canvas;
++import android.graphics.ColorFilter;
++import android.graphics.PixelFormat;
++import android.graphics.Rect;
++import android.graphics.RectF;
++import android.graphics.drawable.Drawable;
++import android.view.View;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++
++/**
++ * Bottom sheet background for the liquid-glass mod: draws the original nine-patch
++ * (soft shadow + rounded top) and the frosted glass on top of its fill area.
++ * Falls back to the original drawable when no backdrop snapshot is available.
++ */
++public class LiquidGlassSheetDrawable extends Drawable {
++
++    private final Drawable inner;
++    public final LiquidGlassBackdrop backdrop;
++    private final Rect padding = new Rect();
++    private final RectF rect = new RectF();
++    private int surfaceColor;
++    private int alpha = 255;
++
++    public LiquidGlassSheetDrawable(Drawable inner, LiquidGlassBackdrop backdrop, int surfaceColor) {
++        this.inner = inner;
++        this.backdrop = backdrop;
++        this.surfaceColor = surfaceColor;
++        inner.getPadding(padding);
++    }
++
++    public Drawable getInner() {
++        return inner;
++    }
++
++    public void setSurfaceColor(int color) {
++        if (surfaceColor != color) {
++            surfaceColor = color;
++            invalidateSelf();
++        }
++    }
++
++    @Override
++    public void draw(@NonNull Canvas canvas) {
++        final Rect b = getBounds();
++        inner.setBounds(b);
++        inner.draw(canvas);
++        final Callback cb = getCallback();
++        if (cb instanceof View && backdrop.hasBitmap()) {
++            rect.set(b.left + padding.left, b.top + padding.top, b.right - padding.right, b.bottom);
++            final float r = dp(23);
++            backdrop.draw(canvas, (View) cb, rect, r, r, 0, 0, surfaceColor, alpha);
++        }
++    }
++
++    @Override
++    public boolean getPadding(@NonNull Rect padding) {
++        return inner.getPadding(padding);
++    }
++
++    @Override
++    protected void onBoundsChange(@NonNull Rect bounds) {
++        inner.setBounds(bounds);
++    }
++
++    @Override
++    public void setAlpha(int alpha) {
++        this.alpha = alpha;
++        inner.setAlpha(alpha);
++    }
++
++    @Override
++    public void setColorFilter(@Nullable ColorFilter colorFilter) {
++        inner.setColorFilter(colorFilter);
++    }
++
++    @Override
++    public int getOpacity() {
++        return PixelFormat.TRANSLUCENT;
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/IntroActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/IntroActivity.java
+index b3cd7c5..ef33dd3 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/IntroActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/IntroActivity.java
+@@ -439,9 +439,16 @@ public class IntroActivity extends BaseFragment implements NotificationCenter.No
+     }
+ 
+     @SuppressLint("SourceLockedOrientationActivity")
++    private boolean glassApiAsked;
++
+     @Override
+     public void onResume() {
+         super.onResume();
++        if (org.telegram.messenger.BuildVars.PUBLIC_BUILD && getParentActivity() != null && !org.telegram.messenger.BuildVars.hasCustomApi(getParentActivity()) && !glassApiAsked) {
++            glassApiAsked = true; // Telegram Glass public build: ask for user's own api_id/api_hash
++            final android.app.Activity act = getParentActivity();
++            org.telegram.messenger.AndroidUtilities.runOnUIThread(() -> org.telegram.ui.Components.glass.GlassApiDialog.show(act, false), 400);
++        }
+         if (justCreated) {
+             if (LocaleController.isRTL) {
+                 viewPager.setCurrentItem(6);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LiteModeSettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LiteModeSettingsActivity.java
+index 79abb08..741b189 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LiteModeSettingsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LiteModeSettingsActivity.java
+@@ -120,6 +120,14 @@ public class LiteModeSettingsActivity extends BaseFragment {
+                 return;
+             }
+             final Item item = items.get(position);
++            if (item.viewType == VIEW_TYPE_INFO && item.text != null && item.text.toString().equals(GLASS_DECOR_TEXT)) {
++                org.telegram.ui.Components.glass.GlassBgPicker.show(getParentActivity(), 0, null);
++                return;
++            }
++            if (item.viewType == VIEW_TYPE_INFO && item.text != null && item.text.toString().equals(glassApiText().toString())) {
++                org.telegram.ui.Components.glass.GlassApiDialog.show(getParentActivity(), true);
++                return;
++            }
+ 
+             if (item.viewType == VIEW_TYPE_SWITCH || item.viewType == VIEW_TYPE_CHECKBOX) {
+                 if (LiteMode.isPowerSaverApplied()) {
+@@ -264,8 +272,11 @@ public class LiteModeSettingsActivity extends BaseFragment {
+             if (SharedConfig.getDevicePerformanceClass() >= SharedConfig.PERFORMANCE_CLASS_AVERAGE || BuildVars.DEBUG_PRIVATE_VERSION) {
+                 items.add(Item.asCheckbox(LocaleController.getString("LiteOptionsBlur2"), LiteMode.FLAG_CHAT_BLUR));
+             }
+-            if (Build.VERSION.SDK_INT >= 33 && (SharedConfig.getDevicePerformanceClass() >= SharedConfig.PERFORMANCE_CLASS_AVERAGE || BuildVars.DEBUG_PRIVATE_VERSION)) {
+-                items.add(Item.asCheckbox(LocaleController.getString("LiteOptionsLiquidGlass"), LiteMode.FLAG_LIQUID_GLASS));
++            if (Build.VERSION.SDK_INT >= 33) {
++                items.add(Item.asCheckbox(LocaleController.getString("LiteOptionsLiquidGlass") + " (Шейдер: " + org.telegram.ui.Components.blur3.LiquidGlassEffect.testShader() + ")", LiteMode.FLAG_LIQUID_GLASS));
++            }
++            if (SharedConfig.getDevicePerformanceClass() >= SharedConfig.PERFORMANCE_CLASS_AVERAGE) {
++                items.add(Item.asCheckbox(glassSurfacesTitle(), LiteMode.FLAG_GLASS_SURFACES));
+             }
+             items.add(Item.asCheckbox(LocaleController.getString("LiteOptionsScale"), LiteMode.FLAG_CHAT_SCALE));
+             if (ThanosEffect.supports()) {
+@@ -280,6 +291,8 @@ public class LiteModeSettingsActivity extends BaseFragment {
+ 
+         items.add(Item.asSwitch(LocaleController.getString(R.string.LiteSmoothTransitions), SWITCH_TYPE_SMOOTH_TRANSITIONS));
+         items.add(Item.asInfo(LocaleController.getString("LiteSmoothTransitionsInfo")));
++        items.add(Item.asInfo(glassApiText())); // Telegram Glass: change api_id / api_hash
++        items.add(Item.asInfo(GLASS_DECOR_TEXT)); // v10.8
+ 
+         adapter.setItems(oldItems, items);
+     }
+@@ -430,6 +443,9 @@ public class LiteModeSettingsActivity extends BaseFragment {
+ 
+         @Override
+         public boolean isEnabled(RecyclerView.ViewHolder holder) {
++            final int gp = holder.getAdapterPosition();
++            if (holder.getItemViewType() == VIEW_TYPE_INFO && gp >= 0 && gp < items.size() && items.get(gp).text != null && GLASS_DECOR_TEXT.equals(items.get(gp).text.toString())) return true;
++            if (holder.getItemViewType() == VIEW_TYPE_INFO && gp >= 0 && gp < items.size() && items.get(gp).text != null && items.get(gp).text.toString().equals(glassApiText().toString())) return true;
+             return holder.getItemViewType() == VIEW_TYPE_CHECKBOX || holder.getItemViewType() == VIEW_TYPE_SWITCH || holder.getItemViewType() == VIEW_TYPE_SWITCH2;
+         }
+     }
+@@ -627,12 +643,15 @@ public class LiteModeSettingsActivity extends BaseFragment {
+             if (SharedConfig.getDevicePerformanceClass() < SharedConfig.PERFORMANCE_CLASS_AVERAGE && (flags & LiteMode.FLAG_CHAT_BLUR) > 0) {
+                 count--;
+             }
+-            if (!(Build.VERSION.SDK_INT >= 33 && (SharedConfig.getDevicePerformanceClass() >= SharedConfig.PERFORMANCE_CLASS_AVERAGE || BuildVars.DEBUG_PRIVATE_VERSION)) && (flags & LiteMode.FLAG_LIQUID_GLASS) > 0) {
++            if (!(Build.VERSION.SDK_INT >= 33) && (flags & LiteMode.FLAG_LIQUID_GLASS) > 0) {
+                 count--;
+             }
+             if (!ThanosEffect.supports() && (flags & LiteMode.FLAG_CHAT_THANOS) > 0) {
+                 count--;
+             }
++            if (SharedConfig.getDevicePerformanceClass() < SharedConfig.PERFORMANCE_CLASS_AVERAGE && (flags & LiteMode.FLAG_GLASS_SURFACES) > 0) {
++                count--;
++            }
+             return count;
+         }
+ 
+@@ -982,6 +1001,13 @@ public class LiteModeSettingsActivity extends BaseFragment {
+         }
+     }
+ 
++    private static final String GLASS_DECOR_TEXT = "🎨 Фон профиля и декоративные подарки — нажмите, чтобы настроить";
++
++    private static CharSequence glassApiText() {
++        final boolean ru = LocaleController.getInstance().getCurrentLocale().getLanguage().startsWith("ru");
++        return (ru ? "🔑 API ID / API Hash (Telegram Glass): " : "🔑 API ID / API Hash (Telegram Glass): ") + BuildVars.APP_ID + (ru ? " — нажмите, чтобы изменить" : " — tap to change");
++    }
++
+     private static class Item extends AdapterWithDiffUtils.Item {
+         public CharSequence text;
+         public int iconResId;
+@@ -1072,4 +1098,14 @@ public class LiteModeSettingsActivity extends BaseFragment {
+         listView.setPadding(0, 0, 0, bottom);
+         listView.setClipToPadding(false);
+     }
++
++    private static String glassSurfacesTitle() {
++        try {
++            final String lang = LocaleController.getInstance().getCurrentLocale().getLanguage();
++            if ("ru".equals(lang) || "uk".equals(lang) || "be".equals(lang)) {
++                return "Стеклянные меню и окна";
++            }
++        } catch (Exception ignore) {}
++        return "Glass menus and sheets";
++    }
+ }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java
+index a3916cc..b1901d1 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java
+@@ -915,9 +915,16 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
+         AndroidUtilities.removeAltFocusable(getParentActivity(), classGuid);
+     }
+ 
++    private boolean glassApiAsked;
++
+     @Override
+     public void onResume() {
+         super.onResume();
++        if (org.telegram.messenger.BuildVars.PUBLIC_BUILD && getParentActivity() != null && !org.telegram.messenger.BuildVars.hasCustomApi(getParentActivity()) && !glassApiAsked) {
++            glassApiAsked = true; // Telegram Glass public build: ask for user's own api_id/api_hash
++            final android.app.Activity act = getParentActivity();
++            org.telegram.messenger.AndroidUtilities.runOnUIThread(() -> org.telegram.ui.Components.glass.GlassApiDialog.show(act, false), 400);
++        }
+         if (newAccount) {
+             ConnectionsManager.getInstance(currentAccount).setAppPaused(false, false);
+         }
+@@ -1715,9 +1722,14 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
+                     if (getParentActivity() == null || getParentActivity().isFinishing() || getContext() == null) {
+                         return;
+                     }
++                    // Telegram Glass: show the server's reason instead of a generic message
++                    String glassMessage = getString(R.string.SafetyNetErrorOccurred);
++                    if (error != null && error.code != -1000) {
++                        glassMessage = glassLoginErrorText(error);
++                    }
+                     new AlertDialog.Builder(getContext())
+                             .setTitle(getString(R.string.RestorePasswordNoEmailTitle))
+-                            .setMessage(getString(R.string.SafetyNetErrorOccurred))
++                            .setMessage(glassMessage)
+                             .setPositiveButton(getString(R.string.OK), (dialog, which) -> {
+                                 forceDisableSafetyNet = true;
+                                 if (currentViewNum != VIEW_PHONE_INPUT) {
+@@ -1730,6 +1742,22 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
+         }, ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagWithoutLogin);
+     }
+ 
++    // Telegram Glass: human readable login error (never leave the user with a silent spinner)
++    public static String glassLoginErrorText(TLRPC.TL_error error) {
++        final String text = error == null || error.text == null ? "" : error.text;
++        final int code = error == null ? 0 : error.code;
++        boolean ru = false;
++        try {
++            ru = "ru".equals(LocaleController.getInstance().getCurrentLocale().getLanguage());
++        } catch (Exception ignore) {}
++        if (text.contains("API_ID") || text.contains("APP_ID") || text.contains("UPDATE_APP_TO_LOGIN") || text.contains("APP_OUTDATED") || code == 406) {
++            return ru
++                ? "Сервер Telegram отклонил вход для этой сборки (" + text + ", " + code + ").\n\nСкорее всего нужен собственный api_id/api_hash: получите их на my.telegram.org (API development tools) и пересоберите Telegram Glass с ними (BuildVars.java или -PglassApiId / -PglassApiHash)."
++                : "Telegram rejected the login for this build (" + text + ", " + code + ").\n\nMost likely this fork needs its own api_id/api_hash: get them at my.telegram.org (API development tools) and rebuild Telegram Glass with them (BuildVars.java or -PglassApiId / -PglassApiHash).";
++        }
++        return getString(R.string.ErrorOccurred) + "\n" + (text.isEmpty() ? "?" : text) + " (" + code + ")";
++    }
++
+     public static String errorString(Throwable e) {
+         if (e == null) return "NULL";
+         String str = "";
+@@ -1768,6 +1796,15 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
+             return;
+         }
+         if (res.type instanceof TLRPC.TL_auth_sentCodeTypeFirebaseSms && !res.type.verifiedFirebase && !isRequestingFirebaseSms) {
++            if (!BuildVars.FIREBASE_SMS_SUPPORTED) {
++                // Telegram Glass: Play Integrity / SafetyNet are bound to the official package+signature and
++                // can't pass for a fork -> immediately ask the server for another delivery method (SMS / app).
++                FileLog.d("{PLAYINTEGRITY_UNAVAILABLE} fork build, resend code without firebase");
++                needShowProgress(0);
++                isRequestingFirebaseSms = true;
++                resendCodeFromSafetyNet(params, res, "PLAYINTEGRITY_UNAVAILABLE");
++                return;
++            }
+             if (PushListenerController.GooglePushListenerServiceProvider.INSTANCE.hasServices()) {
+                 TLRPC.TL_auth_sentCodeTypeFirebaseSms r = (TLRPC.TL_auth_sentCodeTypeFirebaseSms) res.type;
+                 needShowProgress(0);
+@@ -3080,7 +3117,7 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
+             settings.allow_flashcall = simcardAvailable && allowCall && allowCancelCall && allowReadCallLog;
+             settings.allow_missed_call = simcardAvailable && allowCall;
+             settings.allow_app_hash = settings.allow_firebase = PushListenerController.GooglePushListenerServiceProvider.INSTANCE.hasServices();
+-            if (forceDisableSafetyNet || TextUtils.isEmpty(BuildVars.SAFETYNET_KEY)) {
++            if (forceDisableSafetyNet || !BuildVars.FIREBASE_SMS_SUPPORTED || TextUtils.isEmpty(BuildVars.SAFETYNET_KEY)) {
+                 settings.allow_firebase = false;
+             }
+ 
+@@ -3236,8 +3273,14 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
+                         } else if (error.text.startsWith("FLOOD_WAIT")) {
+                             needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("FloodWait", R.string.FloodWait));
+                         } else if (error.code != -1000) {
+-                            AlertsCreator.processError(currentAccount, error, LoginActivity.this, req, phoneInputData.phoneNumber);
++                            // Telegram Glass: AlertsCreator.processError() has no branch for auth.sendCode and
++                            // ignores 406 errors, so e.g. API_ID_INVALID / API_ID_PUBLISHED_FLOOD /
++                            // UPDATE_APP_TO_LOGIN ended in a silent spinner. Always show the reason.
++                            FileLog.e("auth.sendCode error " + error.code + " " + error.text);
++                            needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), glassLoginErrorText(error));
+                         }
++                    } else if (error.code != -1000) {
++                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), glassLoginErrorText(error));
+                     }
+                 }
+                 if (!isRequestingFirebaseSms) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java
+index d21d71c..d062301 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java
+@@ -102,6 +102,7 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+     private int accountsInfoRow;
+ 
+     private int notificationsServiceRow;
++    private int glassRelayHeaderRow, glassRelayEnableRow, glassRelayAccessRow, glassRelayHideRow, glassRelayInfoRow;
+     private int notificationsServiceConnectionRow;
+ 
+     private int notificationsSectionRow;
+@@ -212,6 +213,11 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+         pinnedMessageRow = rowCount++;
+         otherSection2Row = rowCount++;
+ 
++        glassRelayHeaderRow = rowCount++;
++        glassRelayEnableRow = rowCount++;
++        glassRelayAccessRow = rowCount++;
++        glassRelayHideRow = rowCount++;
++        glassRelayInfoRow = rowCount++;
+         otherSectionRow = rowCount++;
+         notificationsServiceRow = rowCount++;
+         notificationsServiceConnectionRow = rowCount++;
+@@ -754,6 +760,31 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+                         }
+                     }
+                 }
++            } else if (position == glassRelayEnableRow || position == glassRelayHideRow) {
++                String key = position == glassRelayEnableRow ? org.telegram.messenger.glass.GlassRelayService.PREF_ENABLED : org.telegram.messenger.glass.GlassRelayService.PREF_HIDE;
++                SharedPreferences preferences = MessagesController.getGlobalNotificationsSettings();
++                enabled = preferences.getBoolean(key, true);
++                preferences.edit().putBoolean(key, !enabled).apply();
++                if (!enabled && position == glassRelayEnableRow && Build.VERSION.SDK_INT >= 33 && getParentActivity() != null
++                        && getParentActivity().checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
++                    getParentActivity().requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
++                }
++            } else if (position == glassRelayAccessRow) {
++                try {
++                    if (Build.VERSION.SDK_INT >= 33 && getParentActivity() != null
++                            && getParentActivity().checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
++                        getParentActivity().requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
++                    }
++                    Intent intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
++                    if (Build.VERSION.SDK_INT >= 30) {
++                        Intent detail = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS);
++                        detail.putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, new android.content.ComponentName(ApplicationLoader.applicationContext, org.telegram.messenger.glass.GlassRelayService.class).flattenToString());
++                        try { getParentActivity().startActivity(detail); return; } catch (Throwable ignore) {}
++                    }
++                    getParentActivity().startActivity(intent);
++                } catch (Throwable e) {
++                    FileLog.e(e);
++                }
+             } else if (position == notificationsServiceRow) {
+                 SharedPreferences preferences = MessagesController.getNotificationsSettings(currentAccount);
+                 enabled = preferences.getBoolean("pushService", getMessagesController().keepAliveService);
+@@ -938,7 +969,7 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+                     position == badgeNumberSection || position == otherSection2Row || position == resetSection2Row ||
+                     position == callsSection2Row || position == callsSectionRow || position == badgeNumberSection2Row ||
+                     position == accountsSectionRow || position == accountsInfoRow || position == resetNotificationsSectionRow ||
+-                    position == eventsSection2Row);
++                    position == eventsSection2Row || position == glassRelayHeaderRow || position == glassRelayInfoRow);
+         }
+ 
+         @Override
+@@ -987,6 +1018,8 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+                         headerCell.setText(getString("InAppNotifications", R.string.InAppNotifications));
+                     } else if (position == eventsSectionRow) {
+                         headerCell.setText(getString("Events", R.string.Events));
++                    } else if (position == glassRelayHeaderRow) {
++                        headerCell.setText("Уведомления через официальный Telegram");
+                     } else if (position == otherSectionRow) {
+                         headerCell.setText(getString("NotificationsOther", R.string.NotificationsOther));
+                     } else if (position == resetSectionRow) {
+@@ -1017,6 +1050,10 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+                         checkCell.setTextAndCheck(getString("PinnedMessages", R.string.PinnedMessages), preferences.getBoolean("PinnedMessages", true), false);
+                     } else if (position == androidAutoAlertRow) {
+                         checkCell.setTextAndCheck("Android Auto", preferences.getBoolean("EnableAutoNotifications", false), true);
++                    } else if (position == glassRelayEnableRow) {
++                        checkCell.setTextAndValueAndCheck("Получать через официальный Telegram", "Официальное приложение будит Telegram Glass при новом сообщении", org.telegram.messenger.glass.GlassRelayService.isEnabled(), true, true);
++                    } else if (position == glassRelayHideRow) {
++                        checkCell.setTextAndCheck("Скрывать уведомления официального Telegram", org.telegram.messenger.glass.GlassRelayService.isHideEnabled(), false);
+                     } else if (position == notificationsServiceRow) {
+                         checkCell.setTextAndValueAndCheck(getString("NotificationsService", R.string.NotificationsService), getString("NotificationsServiceInfo", R.string.NotificationsServiceInfo), preferences.getBoolean("pushService", getMessagesController().keepAliveService), true, true);
+                     } else if (position == notificationsServiceConnectionRow) {
+@@ -1147,7 +1184,9 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+                 case 5: {
+                     TextSettingsCell textCell = (TextSettingsCell) holder.itemView;
+                     SharedPreferences preferences = MessagesController.getNotificationsSettings(currentAccount);
+-                    if (position == callsRingtoneRow) {
++                    if (position == glassRelayAccessRow) {
++                        textCell.setTextAndValue("Доступ к уведомлениям", org.telegram.messenger.glass.GlassRelayService.hasAccess(mContext) ? "выдан" : "не выдан", false, true);
++                    } else if (position == callsRingtoneRow) {
+                         String value = preferences.getString("CallsRingtone", getString("DefaultRingtone", R.string.DefaultRingtone));
+                         if (value.equals("NoSound")) {
+                             value = getString("NoSound", R.string.NoSound);
+@@ -1187,6 +1226,11 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+                     TextInfoPrivacyCell textCell = (TextInfoPrivacyCell) holder.itemView;
+                     if (position == accountsInfoRow) {
+                         textCell.setText(getString("ShowNotificationsForInfo", R.string.ShowNotificationsForInfo));
++                    } else if (position == glassRelayInfoRow) {
++                        String official = org.telegram.messenger.glass.GlassRelayService.findOfficialApp(mContext);
++                        textCell.setText("Официальный Telegram должен быть установлен и вошедшим в этот же аккаунт"
++                            + (official == null ? " (сейчас он не найден)" : "")
++                            + ". Тогда Keep-alive service ниже можно выключить, чтобы экономить батарею.\n\n" + glassVersionLabel());
+                     }
+                     break;
+                 }
+@@ -1197,13 +1241,13 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+         public int getItemViewType(int position) {
+             if (position == eventsSectionRow || position == otherSectionRow || position == resetSectionRow ||
+                     position == callsSectionRow || position == badgeNumberSection || position == inappSectionRow ||
+-                    position == notificationsSectionRow || position == accountsSectionRow) {
++                    position == notificationsSectionRow || position == accountsSectionRow || position == glassRelayHeaderRow) {
+                 return 0;
+             } else if (position == inappSoundRow || position == inappVibrateRow || position == notificationsServiceConnectionRow ||
+                     position == inappPreviewRow || position == contactJoinedRow || position == pinnedMessageRow ||
+                     position == notificationsServiceRow || position == badgeNumberMutedRow || position == badgeNumberMessagesRow ||
+                     position == badgeNumberShowRow || position == inappPriorityRow || position == inchatSoundRow ||
+-                    position == androidAutoAlertRow || position == accountsAllRow) {
++                    position == androidAutoAlertRow || position == accountsAllRow || position == glassRelayEnableRow || position == glassRelayHideRow) {
+                 return 1;
+             } else if (position == resetNotificationsRow) {
+                 return 2;
+@@ -1213,7 +1257,7 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+                     position == resetSection2Row || position == callsSection2Row || position == badgeNumberSection2Row ||
+                     position == resetNotificationsSectionRow) {
+                 return 4;
+-            } else if (position == accountsInfoRow) {
++            } else if (position == accountsInfoRow || position == glassRelayInfoRow) {
+                 return 6;
+             } else {
+                 return 5;
+@@ -1271,4 +1315,12 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+         listView.setPadding(0, 0, 0, bottom);
+         listView.setClipToPadding(false);
+     }
++
++    private String glassVersionLabel() {
++        if (org.telegram.messenger.BuildVars.PUBLIC_BUILD) {
++            try { return getParentActivity().getPackageManager().getPackageInfo(getParentActivity().getPackageName(), 0).versionName; } catch (Throwable ignore) {}
++        }
++        return "Telegram Glass v11.1";
++    }
++
+ }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index 1220c6f..235a5f7 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -410,6 +410,17 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+     private ProfileGooeyView avatarGooey;
+     private ProfileStoriesView storyView;
+     public ProfileGiftsView giftsView;
++    private org.telegram.ui.Components.glass.GlassBackdropView glassBackdropView;
++    private boolean glassDecorActive;
++    private final static int glass_decor_item = 7345;
++    private Theme.ResourcesProvider glassBaseProvider; private boolean glassWrapped;
++    private void glassApplyDecorProvider() {
++        if (!glassWrapped) glassBaseProvider = resourcesProvider;
++        glassDecorActive = glassDecorUid() != 0 && org.telegram.ui.Components.glass.GlassDecor.isActive(glassDecorUid());
++        resourcesProvider = glassDecorActive ? org.telegram.ui.Components.glass.GlassDecor.wrap(glassBaseProvider) : glassBaseProvider;
++        glassWrapped = true;
++    }
++    private long glassDecorUid() { return userId != 0 ? userId : (myProfile ? getUserConfig().getClientUserId() : 0); }
+ 
+     private View scrimView = null;
+     private Paint scrimPaint = new Paint(Paint.ANTI_ALIAS_FLAG) {
+@@ -1354,7 +1365,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+ 
+             int y1 = (int) (v * (1.0f - mediaHeaderAnimationProgress));
+ 
+-            if (y1 != 0) {
++            if (y1 != 0 && glassDecorActive) {
++                // Telegram Glass: the animated backdrop behind the whole profile shows through
++            } else if (y1 != 0) {
+                 paint.setColor(currentColor);
+                 updateBackgroundPaint();
+                 final float progressToGradient = (playProfileAnimation == 0 ? 1f : avatarAnimationProgress) * hasColorAnimated.set(hasColorById);
+@@ -1389,7 +1402,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                     }
+                 }
+             }
+-            if (y1 != v && !openAnimationInProgress) {
++            if (y1 != v && !openAnimationInProgress && !glassDecorActive) {
+                 int color = getThemedColor(Theme.key_windowBackgroundWhite);
+                 paint.setColor(color);
+                 blurBounds.set(0, y1, getMeasuredWidth(), (int) v);
+@@ -1398,6 +1411,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         }
+ 
+         private Rect blurBounds = new Rect();
++        private final RectF glassBgRect = new RectF();
++        private final Paint glassBgPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+     }
+ 
+     private class OverlaysView extends View implements ProfileGalleryView.Callback {
+@@ -2440,6 +2455,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         if (lastFragment instanceof ChatActivity && ((ChatActivity) lastFragment).themeDelegate != null && ((ChatActivity) lastFragment).themeDelegate.getCurrentTheme() != null && !((ChatActivity) lastFragment).themeDelegate.isGiftTheme()) {
+             resourcesProvider = lastFragment.getResourceProvider();
+         }
++        glassApplyDecorProvider();
+         ActionBar actionBar = new ActionBar(context, resourcesProvider) {
+             @Override
+             public boolean onTouchEvent(MotionEvent event) {
+@@ -2526,6 +2542,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+ 
+     @Override
+     public View createView(Context context) {
++        glassApplyDecorProvider();
+         Theme.createProfileResources(context);
+         Theme.createChatResources(context, false);
+         BaseFragment lastFragment = parentLayout.getLastFragment();
+@@ -2557,6 +2574,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                     args.putLong("user_id", user.id);
+                     args.putBoolean("addContact", true);
+                     openAddToContact(user, args);
++                } else if (id == glass_decor_item) {
++                    org.telegram.ui.Components.glass.GlassBgPicker.show(getParentActivity(), glassDecorUid(), () -> glassApplyDecor());
+                 } else if (id == share_contact) {
+                     Bundle args = new Bundle();
+                     args.putBoolean("onlySelect", true);
+@@ -3906,6 +3925,12 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                             }
+                         }
+                         break;
++                    case ProfileActionsView.KEY_SEARCH:
++                        openGlassChatSearch();
++                        break;
++                    case ProfileActionsView.KEY_MORE:
++                        if (otherItem != null) otherItem.toggleSubMenu();
++                        break;
+                     case ProfileActionsView.KEY_DISCUSS:
+                         openDiscussion();
+                         break;
+@@ -4039,6 +4064,10 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+             editItem = menu.addItem(edit_channel, R.drawable.group_edit_profile);
+             editItem.setContentDescription(LocaleController.getString(R.string.Edit));
+         }
++        if (glassDecorUid() != 0) { // Telegram Glass: palette button -> profile background picker
++            ActionBarMenuItem glassBgItem = menu.addItem(glass_decor_item, R.drawable.menu_profile_colors);
++            glassBgItem.setContentDescription("Фон профиля");
++        }
+         otherItem = menu.addItem(10, R.drawable.ic_ab_other, resourcesProvider);
+ 
+         otherItem.setSubMenuDelegate(new ActionBarMenuItem.ActionBarSubMenuItemDelegate() {
+@@ -5489,6 +5518,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         if (actionsView != null) {
+             avatarsBlurView.setActionsView(actionsView);
+             avatarContainer2.addView(actionsView, LayoutHelper.createFrame(-1, -1));
++            actionsView.setGlassSources(avatarGooey, avatarsViewPager); // v10.1: round liquid-glass buttons refract the photo
+         }
+         if (musicView != null) {
+             avatarsBlurView.setMusicView(musicView);
+@@ -5699,6 +5729,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         avatarContainer2.addView(storyView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+         giftsView = new ProfileGiftsView(context, currentAccount, getDialogId(), avatarContainer, avatarImage, resourcesProvider);
+         avatarContainer2.addView(giftsView, 0, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
++
+         updateProfileData(true);
+ 
+         writeButton = new RLottieImageView(context);
+@@ -5955,6 +5986,13 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         };
+ 
+         ViewCompat.setOnApplyWindowInsetsListener(fragmentView, this::onApplyWindowInsets);
++        if (glassDecorUid() != 0 && fragmentView instanceof FrameLayout) { // Telegram Glass: animated backdrop + decorative gifts
++            final long guid = glassDecorUid();
++            {
++                glassBackdropView = new org.telegram.ui.Components.glass.GlassBackdropView(context, guid, avatarContainer);
++                ((FrameLayout) fragmentView).addView(glassBackdropView, 0, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
++            }
++        }
+         return fragmentView;
+     }
+ 
+@@ -6989,6 +7027,29 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         }
+     }
+ 
++    /** v10.1: "search" circle - open the chat with its message search active */
++    private void openGlassChatSearch() {
++        try {
++            final long did = getDialogId();
++            if (parentLayout != null && parentLayout.getFragmentStack().size() >= 2) {
++                BaseFragment prev = parentLayout.getFragmentStack().get(parentLayout.getFragmentStack().size() - 2);
++                if (prev instanceof ChatActivity && ((ChatActivity) prev).getDialogId() == did) {
++                    finishFragment();
++                    AndroidUtilities.runOnUIThread(() -> ((ChatActivity) prev).openSearchWithText(null), 300);
++                    return;
++                }
++            }
++            Bundle args = new Bundle();
++            if (userId != 0) args.putLong("user_id", userId); else if (chatId != 0) args.putLong("chat_id", chatId); else return;
++            if (!getMessagesController().checkCanOpenChat(args, ProfileActivity.this)) return;
++            ChatActivity chatActivity = new ChatActivity(args);
++            presentFragment(chatActivity);
++            AndroidUtilities.runOnUIThread(() -> chatActivity.openSearchWithText(null), 400);
++        } catch (Throwable e) {
++            FileLog.e(e);
++        }
++    }
++
+     private void openChat() {
+         if (userId != 0) {
+             if (finishFragmentIfPreviousIsChatActivity()) {
+@@ -9547,9 +9608,30 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         }
+     }
+ 
++    private void glassApplyDecor() {
++        if (glassBackdropView != null) glassBackdropView.invalidate();
++        if (glassDecorUid() != 0 && glassDecorActive != org.telegram.ui.Components.glass.GlassDecor.isActive(glassDecorUid())) {
++            // glass/transparent colours are set at creation: reopen this screen instantly with the new look
++            AndroidUtilities.runOnUIThread(() -> {
++                try { if (!finishing && parentLayout != null && parentLayout.getLastFragment() == ProfileActivity.this) presentFragment(new ProfileActivity(getArguments()), true, true); } catch (Throwable e) { FileLog.e(e); }
++            }, 150);
++        }
++    }
++
+     @Override
+     public void onResume() {
+         super.onResume();
++        if (glassDecorUid() != 0 && glassDecorActive != org.telegram.ui.Components.glass.GlassDecor.isActive(glassDecorUid()) && parentLayout != null) {
++            // decor switched on/off: recreate this screen so the transparent/glass colors apply
++            AndroidUtilities.runOnUIThread(() -> {
++                try {
++                    if (parentLayout != null && parentLayout.getLastFragment() == ProfileActivity.this && !finishing) {
++                        presentFragment(new ProfileActivity(getArguments()), true, true); // reopen with the new look
++                    }
++                } catch (Throwable e) { FileLog.e(e); }
++            }, 350);
++        }
++        if (topView != null) topView.invalidate();
+         if (sharedMediaLayout != null) {
+             sharedMediaLayout.onResume();
+         }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+index b779126..601de64 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+@@ -685,6 +685,7 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+             items.add(UItem.asShadow(null));
+         }
+ 
++        items.add(SettingCell.Factory.of(7346, IconBackgroundColors.PURPLE.top, IconBackgroundColors.PURPLE.bottom, R.drawable.menu_profile_colors, "🎨 Фон профиля", "Анимированный фон вашего профиля (видно только вам)"));
+         items.add(SettingCell.Factory.of(1, IconBackgroundColors.BLUE.top, IconBackgroundColors.BLUE.bottom, R.drawable.settings_account, getString(R.string.SettingsAccount), getString(R.string.SettingsAccountInfo)));
+         items.add(SettingCell.Factory.of(2, IconBackgroundColors.ORANGE.top, IconBackgroundColors.ORANGE.bottom, R.drawable.settings_chat, getString(R.string.SettingsChat), getString(R.string.SettingsChatInfo)));
+         items.add(SettingCell.Factory.of(3, IconBackgroundColors.GREEN.top, IconBackgroundColors.GREEN.bottom, R.drawable.settings_privacy, getString(R.string.SettingsPrivacySecurity), getString(R.string.SettingsPrivacySecurityInfo)));
+@@ -812,6 +813,9 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+             return;
+         }
+         switch (item.id) {
++            case 7346:
++                org.telegram.ui.Components.glass.GlassBgPicker.show(getParentActivity(), 0, null);
++                break;
+             case 1:
+                 presentSettingFragment(new UserInfoActivity());
+                 break;
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_bolt.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_bolt.png
+new file mode 100644
+index 0000000..e5c1b66
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_bolt.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_cat.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_cat.png
+new file mode 100644
+index 0000000..a35a530
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_cat.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_clover.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_clover.png
+new file mode 100644
+index 0000000..e973baf
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_clover.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_crown.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_crown.png
+new file mode 100644
+index 0000000..1cd8862
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_crown.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_diamond.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_diamond.png
+new file mode 100644
+index 0000000..04071d9
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_diamond.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_flower.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_flower.png
+new file mode 100644
+index 0000000..1790057
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_flower.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_gift.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_gift.png
+new file mode 100644
+index 0000000..d8aa93b
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_gift.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_heart.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_heart.png
+new file mode 100644
+index 0000000..0d7eeb3
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_heart.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_moon.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_moon.png
+new file mode 100644
+index 0000000..72de883
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_moon.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_note.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_note.png
+new file mode 100644
+index 0000000..12b979d
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_note.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_rocket.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_rocket.png
+new file mode 100644
+index 0000000..1a290b2
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_rocket.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_star.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_star.png
+new file mode 100644
+index 0000000..7f98a7d
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_emblem_star.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_bolt.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_bolt.png
+new file mode 100644
+index 0000000..fce2187
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_bolt.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_cat.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_cat.png
+new file mode 100644
+index 0000000..2f389ef
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_cat.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_clover.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_clover.png
+new file mode 100644
+index 0000000..67b1923
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_clover.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_crown.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_crown.png
+new file mode 100644
+index 0000000..c5813ad
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_crown.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_diamond.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_diamond.png
+new file mode 100644
+index 0000000..892dfab
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_diamond.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_flower.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_flower.png
+new file mode 100644
+index 0000000..c858d63
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_flower.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_gift.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_gift.png
+new file mode 100644
+index 0000000..ac45e04
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_gift.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_heart.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_heart.png
+new file mode 100644
+index 0000000..ecfe016
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_heart.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_moon.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_moon.png
+new file mode 100644
+index 0000000..889cfe2
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_moon.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_note.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_note.png
+new file mode 100644
+index 0000000..162f1c6
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_note.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_rocket.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_rocket.png
+new file mode 100644
+index 0000000..8d233cf
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_rocket.png differ
+diff --git a/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_star.png b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_star.png
+new file mode 100644
+index 0000000..2090acd
+Binary files /dev/null and b/TMessagesProj/src/main/res/drawable-nodpi/glass_gift_star.png differ
+diff --git a/TMessagesProj/src/main/res/raw/glass_bubble_shader.agsl b/TMessagesProj/src/main/res/raw/glass_bubble_shader.agsl
+new file mode 100644
+index 0000000..e9e817e
+--- /dev/null
++++ b/TMessagesProj/src/main/res/raw/glass_bubble_shader.agsl
+@@ -0,0 +1,45 @@
++// Telegram Glass v11: glowing jelly bubble — thick luminous iridescent animated rim, layered sliding arcs, inner light, soft bloom
++uniform float2 center;
++uniform float radius;
++uniform float time;
++uniform float4 tint;   // gift colour, rgb 0..1
++uniform float alpha;
++uniform float fill;    // 1 = full bubble, ~0.25 = mostly rim (orbiting gifts)
++
++half4 main(float2 p) {
++  float2 q = p - center;
++  float th = atan(q.y, q.x);
++  float rr = length(q);
++  float Rt = radius * (1.0 + 0.020 * sin(3.0 * th + 2.0 * time) + 0.013 * sin(5.0 * th - 3.0 * time) + 0.008 * sin(7.0 * th + 1.3 * time));
++  float d = rr / Rt;
++  float inside = smoothstep(1.01, 0.99, d);
++  float fres = inside * pow(clamp(d, 0.0, 1.0), 2.6);
++  float2 lq = q + float2(radius * 0.25, radius * 0.3);
++  float inner = inside * exp(-dot(lq, lq) / (2.0 * (radius * 0.55) * (radius * 0.55)));
++  // thick luminous rim: sharp core + wide soft glow
++  float e = (d - 0.985) / 0.035;
++  float rimCore = exp(-e * e);
++  float e2 = (d - 0.97) / 0.14;
++  float rimGlow = exp(-e2 * e2);
++  // layered arcs sliding around the edge at different speeds/directions
++  float arcs = pow(max(cos(th - time * 1.25), 0.0), 8.0) * 1.2
++             + pow(max(cos(th + time * 0.9 + 2.2), 0.0), 12.0) * 0.9
++             + pow(max(cos(2.0 * th - time * 0.6 + 1.0), 0.0), 16.0) * 0.7
++             + pow(max(cos(th - time * 2.1 + 4.0), 0.0), 24.0) * 0.8;
++  float arcMask = exp(-((d - 0.975) / 0.07) * ((d - 0.975) / 0.07));
++  float bloom = (1.0 - inside) * exp(-(d - 1.0) * 5.5) * smoothstep(1.45, 1.0, d);
++  float ph = th * 2.0 + time * 0.8 + d * 6.0;
++  float3 irid = 0.5 + 0.5 * float3(sin(ph), sin(ph + 2.094), sin(ph + 4.188));
++  float3 col = tint.rgb;
++  float3 rimCol = mix(col, irid, 0.6) * 0.95 + 0.04;
++  float3 rgb = col * (0.30 * inside + 0.8 * fres) * fill
++             + float3(0.42 * inner * fill)
++             + rimCol * (0.75 * rimCore + 0.35 * rimGlow)
++             + (irid * 0.45 + 0.55) * arcs * arcMask * 0.8
++             + col * 1.2 * bloom;
++  float a = 0.16 * inside * fill + 0.65 * fres * fill + 0.32 * inner * fill
++          + 0.7 * rimCore + 0.28 * rimGlow + 0.75 * arcs * arcMask + 0.5 * bloom;
++  a = clamp(a, 0.0, 1.0);
++  rgb = clamp(rgb, 0.0, 1.0) * a;
++  return half4(half3(rgb), half(a)) * half(alpha);
++}
+diff --git a/TMessagesProj/src/main/res/raw/ios_liquid_glass_shader.agsl b/TMessagesProj/src/main/res/raw/ios_liquid_glass_shader.agsl
+new file mode 100644
+index 0000000..2d17842
+--- /dev/null
++++ b/TMessagesProj/src/main/res/raw/ios_liquid_glass_shader.agsl
+@@ -0,0 +1,86 @@
++// iOS 26-style "Liquid Glass" (liquid-glass mod).
++// Input `img` is the content behind the glass, in node coordinates.
++// - lens refraction: bevel profile derived from the signed distance field of a rounded rect,
++//   surface normal -> displaced sample coordinate (content bends/magnifies at the rim)
++// - v7: no chromatic fringe, no frost; v10.1: no white rim / border line
++uniform shader img;
++
++uniform float2 resolution;
++uniform float2 center;
++uniform float2 size;
++uniform float4 radius;
++uniform float thickness;
++uniform float refract_index;
++uniform float refract_intensity;
++uniform float4 foreground_color_premultiplied;
++uniform float chroma;
++uniform float specular;
++uniform float dark;
++uniform float tint_scale;
++
++float sdfRect(float2 p, float4 r) {
++  r.xy = (p.x > 0.0) ? r.xy : r.zw;
++  r.x  = (p.y > 0.0) ? r.x  : r.y;
++  float2 q = abs(p) - size + r.x;
++  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r.x;
++}
++
++half4 main(float2 fragCoord) {
++  float2 p = fragCoord - center;
++  float sd = sdfRect(p, radius);
++  float coverage = clamp(0.5 - sd, 0.0, 1.0);
++  if (coverage <= 0.0) {
++    return half4(0.0);
++  }
++
++  // 2D outward normal of the shape
++  float2 g = float2(
++    sdfRect(p + float2(1.0, 0.0), radius) - sdfRect(p - float2(1.0, 0.0), radius),
++    sdfRect(p + float2(0.0, 1.0), radius) - sdfRect(p - float2(0.0, 1.0), radius)
++  );
++  float gl = length(g);
++  float2 n2 = gl > 0.0001 ? g / gl : float2(0.0, 0.0);
++
++  // e: 1 at the rim, 0 deeper than `thickness` (edge band) inside. Center stays e = 0 -> clear glass.
++  float th = max(thickness, 1.0);
++  float e = 1.0 - clamp(-sd / th, 0.0, 1.0);
++  float k = refract_intensity * 1.3333;            // default intensity 0.75 -> k = 1
++
++  // strong lens refraction in the edge band: sample is pulled inward along the normal,
++  // so content near the rim is stretched/magnified and visibly bends around the corners
++  float bend = pow(e, 1.6);
++  float dispLen = th * 0.70 * k * bend;
++  float2 uv = fragCoord - n2 * dispLen;
++  // slight overall magnification (clear lens in the middle)
++  uv = center + (uv - center) * (1.0 - 0.06 * k);
++
++  // no chromatic fringe, no frost: single clean sample (liquid-glass mod v7)
++  float4 col = img.eval(uv) + float4(0.0 * chroma);
++
++  // light vibrancy
++  float l = dot(col.rgb, float3(0.299, 0.587, 0.114));
++  col.rgb = mix(float3(l), col.rgb, 1.12);
++  col.rgb = clamp(col.rgb, float3(0.0), float3(col.a));
++
++  // slight tint only (glass stays transparent): scale down the supplied surface colour
++  float4 tint = float4(foreground_color_premultiplied) * tint_scale;
++  col = tint + col * (1.0 - tint.a);
++
++  // depth: subtle darkening inside the bevel
++  col.rgb *= float(1.0 - e * e * (dark > 0.5 ? 0.16 : 0.08));
++
++  // v10.2: thin soft angle-dependent specular rim (iOS 26), ~1dp, brighter top-left & bottom-right
++  float2 L = normalize(float2(-0.7, -0.7));
++  float facing = abs(dot(n2, L));                       // both diagonal ends light up
++  float rimW = max(resolution.x, resolution.y) > 0.0 ? 2.6 : 2.6; // ~1dp at xxhdpi
++  float rim = clamp(1.0 - (-sd) / rimW, 0.0, 1.0);
++  rim = rim * rim;
++  float rimA = rim * (0.10 + 0.24 * pow(facing, 1.5)) * max(specular, 0.6);
++  col.rgb = mix(col.rgb, float3(col.a), rimA);
++  // very light inner shadow on the opposite edge band for separation
++  float sh = pow(e, 3.0) * (1.0 - facing) * 0.06;
++  col.rgb *= float(1.0 - sh);
++  col.rgb = clamp(col.rgb, float3(0.0), float3(col.a));
++
++  return half4(col * coverage);
++}
+diff --git a/TMessagesProj/src/main/res/values/glass_ids.xml b/TMessagesProj/src/main/res/values/glass_ids.xml
+new file mode 100644
+index 0000000..92ee1a7
+--- /dev/null
++++ b/TMessagesProj/src/main/res/values/glass_ids.xml
+@@ -0,0 +1,7 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <!-- Telegram Glass: account type / package used by the system account + sync adapter.
++         Default equals upstream; overridden by resValue in TMessagesProj_App with the real applicationId. -->
++    <string name="tg_account_type" translatable="false">org.telegram.messenger</string>
++    <string name="AppNameGlass" translatable="false">Telegram</string>
++</resources>
+diff --git a/TMessagesProj/src/main/res/xml/auth.xml b/TMessagesProj/src/main/res/xml/auth.xml
+index 4dc99f2..61d72f4 100644
+--- a/TMessagesProj/src/main/res/xml/auth.xml
++++ b/TMessagesProj/src/main/res/xml/auth.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ 
+ <account-authenticator xmlns:android="http://schemas.android.com/apk/res/android"
+-    android:accountType="org.telegram.messenger"
++    android:accountType="@string/tg_account_type"
+     android:icon="@drawable/ic_launcher_dr"
+     android:smallIcon="@drawable/ic_launcher_dr"
+     android:label="@string/AppName"
+diff --git a/TMessagesProj/src/main/res/xml/auth_menu.xml b/TMessagesProj/src/main/res/xml/auth_menu.xml
+index 98b9a70..99e15d4 100644
+--- a/TMessagesProj/src/main/res/xml/auth_menu.xml
++++ b/TMessagesProj/src/main/res/xml/auth_menu.xml
+@@ -6,7 +6,7 @@
+         android:title="@string/AccountSettings"
+         android:summary="">
+         <intent android:action="org.telegram.messenger.OPEN_ACCOUNT"
+-            android:targetPackage="org.telegram.messenger"
++            android:targetPackage="@string/tg_account_type"
+             android:targetClass="org.telegram.ui.LaunchActivity"/>
+     </PreferenceScreen>
+ </PreferenceScreen>
+diff --git a/TMessagesProj/src/main/res/xml/sync_contacts.xml b/TMessagesProj/src/main/res/xml/sync_contacts.xml
+index 9e9962e..122d917 100644
+--- a/TMessagesProj/src/main/res/xml/sync_contacts.xml
++++ b/TMessagesProj/src/main/res/xml/sync_contacts.xml
+@@ -1,3 +1,3 @@
+ <sync-adapter xmlns:android="http://schemas.android.com/apk/res/android"
+     android:contentAuthority="com.android.contacts"
+-    android:accountType="org.telegram.messenger"/>
+\ No newline at end of file
++    android:accountType="@string/tg_account_type"/>
+\ No newline at end of file
+diff --git a/TMessagesProj_App/build.gradle b/TMessagesProj_App/build.gradle
+index ea7a853..5f26c78 100644
+--- a/TMessagesProj_App/build.gradle
++++ b/TMessagesProj_App/build.gradle
+@@ -25,7 +25,12 @@ android {
+     compileSdkVersion 36
+     buildToolsVersion '36.0.0'
+ 
+-    defaultConfig.applicationId = APP_PACKAGE
++    // Telegram Glass: own application id (installs next to the official Telegram, no clash).
++    // Override with -PglassAppId=... ; internal Java packages are unchanged.
++    def glassAppId = (project.findProperty("glassAppId") ?: "io.github.demon7344.telegramglass").toString()
++    defaultConfig.applicationId = glassAppId
++    defaultConfig.resValue "string", "tg_account_type", glassAppId
++    defaultConfig.resValue "string", "AppNameGlass", "Telegram Glass"
+ 
+     sourceSets.main.jniLibs.srcDirs = ['../TMessagesProj/jni/']
+ 
+@@ -56,10 +61,22 @@ android {
+         }
+ 
+         release {
+-            storeFile file("../TMessagesProj/config/release.keystore")
+-            storePassword RELEASE_STORE_PASSWORD
+-            keyAlias RELEASE_KEY_ALIAS
+-            keyPassword RELEASE_KEY_PASSWORD
++            // Telegram Glass: private release key, kept OUTSIDE the repo.
++            // Path to keystore.properties: -PglassKeystoreProps=... (default /workspace/tg-glass/keys/keystore.properties)
++            def ksPropsFile = file((project.findProperty("glassKeystoreProps") ?: "/workspace/tg-glass/keys/keystore.properties").toString())
++            if (ksPropsFile.exists()) {
++                def ksProps = new Properties()
++                ksPropsFile.withInputStream { ksProps.load(it) }
++                storeFile file(ksProps['storeFile'])
++                storePassword ksProps['storePassword']
++                keyAlias ksProps['keyAlias']
++                keyPassword ksProps['keyPassword']
++            } else {
++                logger.warn("Telegram Glass: keystore.properties not found at " + ksPropsFile + " - release APK will be unsigned")
++            }
++            enableV1Signing true
++            enableV2Signing true
++            enableV3Signing true
+         }
+     }
+ 
+@@ -142,7 +159,8 @@ android {
+         }
+         afat {
+             ndk {
+-                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
++                // liquid-glass build: ABIs can be limited with -PtgAbis=arm64-v8a to save build time
++                abiFilters(*((project.findProperty("tgAbis") ?: "armeabi-v7a,arm64-v8a,x86,x86_64").toString().split(",")))
+             }
+             sourceSets.debug {
+                 manifest.srcFile '../TMessagesProj/config/debug/AndroidManifest_SDK23.xml'
+@@ -160,7 +178,8 @@ android {
+         }
+     }
+ 
+-    defaultConfig.versionCode = Integer.parseInt(APP_VERSION_CODE)
++    // Telegram Glass: +1 per fork release so updates install over the previous one (v3 = 7112 -> v4 = 7113)
++    defaultConfig.versionCode = Integer.parseInt(APP_VERSION_CODE) + Integer.parseInt((project.findProperty("glassVersionBump") ?: "1").toString())
+ 
+     applicationVariants.all { variant ->
+         variant.outputs.all { output ->
+@@ -179,7 +198,7 @@ android {
+     defaultConfig {
+         minSdkVersion 21
+         targetSdkVersion 36
+-        versionName APP_VERSION_NAME
++        versionName((project.findProperty("glassVersionName") ?: APP_VERSION_NAME).toString())
+         ndkVersion "27.2.12479018"
+ 
+         multiDexEnabled true
+diff --git a/TMessagesProj_App/google-services.json b/TMessagesProj_App/google-services.json
+index 640e841..f3f7911 100644
+--- a/TMessagesProj_App/google-services.json
++++ b/TMessagesProj_App/google-services.json
+@@ -92,6 +92,35 @@
+           ]
+         }
+       }
++    },
++    {
++      "client_info": {
++        "mobilesdk_app_id": "1:760348033671:android:f6afd7b67eae3860",
++        "android_client_info": {
++          "package_name": "io.github.demon7344.telegramglass"
++        }
++      },
++      "oauth_client": [
++        {
++          "client_id": "760348033671-2hh8ebmuflsnjoc0kldkfells9rhtfni.apps.googleusercontent.com",
++          "client_type": 3
++        }
++      ],
++      "api_key": [
++        {
++          "current_key": "AIzaSyA-t0jLPjUt2FxrA8VPK2EiYHcYcboIR6k"
++        }
++      ],
++      "services": {
++        "appinvite_service": {
++          "other_platform_oauth_client": [
++            {
++              "client_id": "760348033671-2hh8ebmuflsnjoc0kldkfells9rhtfni.apps.googleusercontent.com",
++              "client_type": 3
++            }
++          ]
++        }
++      }
+     }
+   ],
+   "configuration_version": "1"
+diff --git a/buildSrc/.kotlin/errors/errors-1791554428624.log b/buildSrc/.kotlin/errors/errors-1791554428624.log
+new file mode 100644
+index 0000000..1219b50
+--- /dev/null
++++ b/buildSrc/.kotlin/errors/errors-1791554428624.log
+@@ -0,0 +1,4 @@
++kotlin version: 2.0.21
++error message: The daemon has terminated unexpectedly on startup attempt #1 with error code: 0. The daemon process output:
++    1. Kotlin compile daemon is ready
++
+diff --git a/buildSrc/.kotlin/errors/errors-1791647140417.log b/buildSrc/.kotlin/errors/errors-1791647140417.log
+new file mode 100644
+index 0000000..1219b50
+--- /dev/null
++++ b/buildSrc/.kotlin/errors/errors-1791647140417.log
+@@ -0,0 +1,4 @@
++kotlin version: 2.0.21
++error message: The daemon has terminated unexpectedly on startup attempt #1 with error code: 0. The daemon process output:
++    1. Kotlin compile daemon is ready
++
+diff --git a/buildSrc/.kotlin/errors/errors-1791708113054.log b/buildSrc/.kotlin/errors/errors-1791708113054.log
+new file mode 100644
+index 0000000..1219b50
+--- /dev/null
++++ b/buildSrc/.kotlin/errors/errors-1791708113054.log
+@@ -0,0 +1,4 @@
++kotlin version: 2.0.21
++error message: The daemon has terminated unexpectedly on startup attempt #1 with error code: 0. The daemon process output:
++    1. Kotlin compile daemon is ready
++
+diff --git a/gradle.properties b/gradle.properties
+index 0485dac..4d9feae 100644
+--- a/gradle.properties
++++ b/gradle.properties
+@@ -20,9 +20,9 @@ IS_PRIVATE=false
+ RELEASE_KEY_PASSWORD=android
+ RELEASE_KEY_ALIAS=androidkey
+ RELEASE_STORE_PASSWORD=android
+-org.gradle.jvmargs=-Xmx8g -XX:MaxMetaspaceSize=1g
+-org.gradle.daemon=true
+-org.gradle.parallel=true
++org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
++org.gradle.daemon=false
++org.gradle.parallel=false
+ org.gradle.configureondemand=false
+ android.useAndroidX=true
+ android.enableJetifier=true
