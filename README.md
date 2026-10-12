@@ -10,6 +10,11 @@
 
 ## 🇷🇺 Русский
 
+### Что нового в v1.6
+- Листья теперь падают **позади списка чатов** (за текстом), а не поверх него, и их стало больше.
+- Все настройки листопада собраны в одной строке «🍂 Осенние листья»: вкл/выкл, размер, скорость и количество (мало / средне / много). Применяются сразу.
+- Листья распределены равномерно по всей ширине экрана.
+
 ### Что нового в v1.5
 - **Без ⋮ в личных чатах**: в шапке личного чата осталась только круглая аватарка собеседника. Нажатие открывает профиль (звонок, видео, звук, поиск, «ещё»), **долгое нажатие на аватарку** открывает прежнее меню ⋮. В группах и каналах ⋮ на месте.
 - **Узоры фона профиля** — 11 вариантов: классический, без узора, точки, кольца, ромбы, звёзды, сердечки, волны, листья, кошачьи лапки, снежинки. Свой узор для себя и для каждого собеседника.
@@ -44,7 +49,7 @@
 | Вход через Google, passkeys, покупки Google Play | да | **нет** |
 
 ### Установка и настройка — по шагам
-1. **Скачайте APK** со страницы [Releases](../../releases) (`telegram-glass-v1.5.apk`).
+1. **Скачайте APK** со страницы [Releases](../../releases) (`telegram-glass-v1.6.apk`).
 2. **Разрешите установку из неизвестных источников**: при открытии APK Android предложит разрешить установку для браузера/файлового менеджера → «Настройки» → включить «Разрешить из этого источника».
 3. **Play Protect** может показать предупреждение «Приложение не проверено» — нажмите «Подробнее» → «Всё равно установить». Это нормально для неофициальных сборок.
 4. **Получите api_id и api_hash**:
@@ -65,7 +70,7 @@
 10. Сменить api_id/api_hash позже: Настройки → Энергосбережение → строка «🔑 API ID / API Hash» внизу.
 11. **Фон профиля**: Настройки → строка «🎨 Фон профиля» (вверху, после аккаунтов) → выберите вариант или «Стандартный». Фон виден, когда вы открываете свой профиль (нажмите на свою аватарку). Для собеседника: откройте его профиль → кнопка-палитра справа вверху (рядом с ⋮) → выберите фон. Всё сохраняется сразу и видно только вам.
 12. **Узор фона**: «🎨 Фон профиля» (или кнопка-палитра в профиле) → «✨ Узор» → выберите узор. Сначала выберите цвет фона («🎨 Цвет фона»), иначе узор не виден.
-13. **Листопад**: Настройки → «🍂 Осенние листья» → Выкл / Маленькие / Средние / Большие; «🍃 Скорость листопада» → Медленно / Средне / Быстро. Применяется сразу.
+13. **Листопад**: Настройки → «🍂 Осенние листья» → в одном окне: переключатель вкл/выкл, Размер, Скорость, Количество. Применяется сразу.
 14. **Меню чата (⋮)** в личных чатах: долгое нажатие на аватарку справа в шапке чата.
 
 ### Ограничения
@@ -78,6 +83,11 @@
 ---
 
 ## 🇬🇧 English
+
+### What's new in v1.6
+- Leaves now fall **behind the chat list** (under the text), not on top of it, and there are more of them.
+- All leaf settings are in one row, "🍂 Осенние листья": on/off, size, speed and quantity (few / medium / many). Applied instantly.
+- Leaves are spread evenly across the whole screen width.
 
 ### What's new in v1.5
 - **No ⋮ in private chats**: the private chat header shows only the round peer avatar. Tap opens the profile (call, video, sound, search, more); **long‑press the avatar** for the old ⋮ menu. Groups and channels keep ⋮.
@@ -104,7 +114,7 @@
 - "Liquid glass" toggle in Settings → Power saving.
 
 ### Install & setup, step by step
-1. Download `telegram-glass-v1.5.apk` from [Releases](../../releases).
+1. Download `telegram-glass-v1.6.apk` from [Releases](../../releases).
 2. Allow installing from unknown sources for your browser / file manager when prompted.
 3. If Play Protect warns, tap "More details" → "Install anyway".
 4. Get api_id / api_hash: open https://my.telegram.org/apps, log in with your phone (the code arrives in Telegram), open "API development tools", fill in any app title, a 5–32 char short name, platform Android, press "Create application", copy **App api_id** and **App api_hash**.
@@ -116,7 +126,7 @@
 10. Change api credentials later: Settings → Power saving → "🔑 API ID / API Hash" row.
 11. Profile background: Settings → "🎨 Фон профиля" row (near the top, after accounts) → pick one or "Стандартный" (default). It shows when you open your own profile (tap your avatar). For a contact: open their profile → palette button top‑right (next to ⋮) → pick. Saved instantly, visible only to you.
 12. Background pattern: "🎨 Фон профиля" (or the palette button in a profile) → "✨ Узор" → pick. Choose a background color first ("🎨 Цвет фона"), otherwise the pattern isn't visible.
-13. Leaf fall: Settings → "🍂 Осенние листья" → off / small / medium / big; "🍃 Скорость листопада" → slow / medium / fast. Applies instantly.
+13. Leaf fall: Settings → "🍂 Осенние листья" → one dialog with on/off switch, size, speed and quantity. Applies instantly.
 14. Chat menu (⋮) in private chats: long‑press the avatar at the top right of the chat header.
 
 ### Limitations
@@ -128,11 +138,11 @@
 
 ## License / Source
 Based on [Telegram for Android](https://github.com/DrKLO/Telegram) (GNU GPL v2). The complete source changes are in
-[`telegram-glass-v1.5.patch`](telegram-glass-v1.5.patch), applied on top of upstream commit `f2908b1` ("update to 12.10.6 (7112)"):
+[`telegram-glass-v1.6.patch`](telegram-glass-v1.6.patch), applied on top of upstream commit `f2908b1` ("update to 12.10.6 (7112)"):
 
 ```
 git clone https://github.com/DrKLO/Telegram && cd Telegram && git checkout f2908b1
-git apply ../telegram-glass-v1.5.patch
+git apply ../telegram-glass-v1.6.patch
 ./gradlew :TMessagesProj_App:assembleAfatRelease
 ```
 No api credentials are included; users supply their own. This project is not affiliated with Telegram FZ‑LLC.
