@@ -46,14 +46,16 @@ index 4e250e0a0..5bbe133be 100644
          android:hardwareAccelerated="true"
          android:largeHeap="true"
 diff --git a/TMessagesProj/src/main/AndroidManifest.xml b/TMessagesProj/src/main/AndroidManifest.xml
-index 63c819b26..91faace6c 100644
+index 63c819b26..3736b3cd3 100644
 --- a/TMessagesProj/src/main/AndroidManifest.xml
 +++ b/TMessagesProj/src/main/AndroidManifest.xml
-@@ -483,6 +483,16 @@
+@@ -483,6 +483,18 @@
              android:exported="true"
              android:foregroundServiceType="mediaPlayback"
          />
 +        <receiver android:name="org.telegram.messenger.glass.GlassFallbackActionReceiver" android:exported="false" />
++        <activity android:name="org.telegram.messenger.glass.GlassClosedActivity" android:exported="false"
++            android:theme="@android:style/Theme.Material.NoActionBar" android:excludeFromRecents="false" />
 +        <service
 +            android:name="org.telegram.messenger.glass.GlassRelayService"
 +            android:label="Telegram Glass: уведомления через официальный Telegram"
@@ -67,10 +69,15 @@ index 63c819b26..91faace6c 100644
              android:name=".NotificationsService"
              android:enabled="true"
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
-index 5405be7f6..5ed941d3e 100644
+index 5405be7f6..5cbc29aff 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
-@@ -193,6 +193,7 @@ public class ApplicationLoader extends Application {
+@@ -189,10 +189,12 @@ public class ApplicationLoader extends Application {
+     }
+ 
+     public static void postInitApplication() {
++        if (BuildVars.GLASS_CLOSED) return;
+         if (applicationInited || applicationContext == null) {
              return;
          }
          applicationInited = true;
@@ -78,19 +85,25 @@ index 5405be7f6..5ed941d3e 100644
          NativeLoader.initNativeLibs(ApplicationLoader.applicationContext);
  
          try {
-@@ -287,6 +288,7 @@ public class ApplicationLoader extends Application {
+@@ -287,6 +289,13 @@ public class ApplicationLoader extends Application {
          } catch (Throwable ignore) {
  
          }
++        if (BuildVars.GLASS_CLOSED) { // public v3.0: closed project, no services/background work at all
++            super.onCreate();
++            if (applicationContext == null) applicationContext = getApplicationContext();
++            org.telegram.messenger.glass.GlassClosedActivity.shutdownComponents(this);
++            return;
++        }
 +        if (applicationContext != null) BuildVars.loadCustomApi(applicationContext); // Telegram Glass: user-supplied api_id
  
          super.onCreate();
  
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java b/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
-index 4ed7e6491..ff904e746 100644
+index 4ed7e6491..f6bc39dac 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
-@@ -22,15 +22,45 @@ public class BuildVars {
+@@ -22,15 +22,47 @@ public class BuildVars {
      public static boolean LOGS_ENABLED = BuildConfig.DEBUG_VERSION;
      public static boolean DEBUG_PRIVATE_VERSION = BuildConfig.DEBUG_PRIVATE_VERSION;
      public static boolean USE_CLOUD_STRINGS = true;
@@ -114,6 +127,8 @@ index 4ed7e6491..ff904e746 100644
 +    public static String APP_HASH = BuildConfig.GLASS_API_ID > 0 && BuildConfig.GLASS_API_HASH != null && BuildConfig.GLASS_API_HASH.length() > 0 ? BuildConfig.GLASS_API_HASH : DEFAULT_APP_HASH;
 +    /** Public build: no credentials baked in, the user enters their own api_id/api_hash. */
 +    public static final boolean PUBLIC_BUILD = BuildConfig.GLASS_API_ID <= 0;
++    /** Public v3.0: the project is closed, the app shows only a blocking screen. */
++    public static final boolean GLASS_CLOSED = PUBLIC_BUILD;
 +    public static void loadCustomApi(android.content.Context ctx) {
 +        try {
 +            android.content.SharedPreferences sp = ctx.getSharedPreferences("glass_api", android.content.Context.MODE_PRIVATE);
@@ -140,7 +155,7 @@ index 4ed7e6491..ff904e746 100644
      public static String PLAYSTORE_APP_URL = "https://play.google.com/store/apps/details?id=org.telegram.messenger";
      public static String HUAWEI_STORE_URL = "https://appgallery.huawei.com/app/C101184875";
      public static String GOOGLE_AUTH_CLIENT_ID = "760348033671-81kmi3pi84p11ub8hp9a1funsv0rn2p9.apps.googleusercontent.com";
-@@ -41,7 +71,7 @@ public class BuildVars {
+@@ -41,7 +73,7 @@ public class BuildVars {
      public static boolean IS_BILLING_UNAVAILABLE = false;
  
      // works only on official app ids, disable on your forks
@@ -311,6 +326,111 @@ index ead28d5ff..52b46118e 100644
                          for (int i = 0; i < ids.size(); ++i) {
                              final int id = ids.get(i);
                              final Utilities.Callback4<Boolean, Integer, TLRPC.TL_textWithEntities, String> _callback = callbacks.get(i);
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/glass/GlassClosedActivity.java b/TMessagesProj/src/main/java/org/telegram/messenger/glass/GlassClosedActivity.java
+new file mode 100644
+index 000000000..85dd2dfb8
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/glass/GlassClosedActivity.java
+@@ -0,0 +1,99 @@
++package org.telegram.messenger.glass;
++
++import android.app.Activity;
++import android.content.ComponentName;
++import android.content.Context;
++import android.content.Intent;
++import android.content.pm.ActivityInfo;
++import android.content.pm.ComponentInfo;
++import android.content.pm.PackageInfo;
++import android.content.pm.PackageManager;
++import android.graphics.Color;
++import android.graphics.drawable.GradientDrawable;
++import android.os.Build;
++import android.os.Bundle;
++import android.util.TypedValue;
++import android.view.Gravity;
++import android.view.View;
++import android.view.Window;
++import android.widget.FrameLayout;
++import android.widget.TextView;
++
++/** Public v3.0: the project is closed. Full-screen blocking screen, no way to proceed. */
++public class GlassClosedActivity extends Activity {
++
++    public static final String TEXT = "Данный проект закрыт! Спасибо кто участвовал.";
++
++    /** Stops and disables every service / receiver / extra activity so the app does no work at all. */
++    public static void shutdownComponents(Context ctx) {
++        try {
++            try { ctx.stopService(new Intent(ctx, org.telegram.messenger.NotificationsService.class)); } catch (Throwable ignore) {}
++            PackageManager pm = ctx.getPackageManager();
++            int flags = PackageManager.GET_SERVICES | PackageManager.GET_RECEIVERS | PackageManager.GET_ACTIVITIES | PackageManager.MATCH_DISABLED_COMPONENTS;
++            PackageInfo pi = pm.getPackageInfo(ctx.getPackageName(), flags);
++            String keep1 = GlassClosedActivity.class.getName(), keep2 = "org.telegram.ui.LaunchActivity";
++            java.util.ArrayList<ComponentInfo> all = new java.util.ArrayList<>();
++            if (pi.services != null) java.util.Collections.addAll(all, pi.services);
++            if (pi.receivers != null) java.util.Collections.addAll(all, pi.receivers);
++            if (pi.activities != null) {
++                for (ActivityInfo ai : pi.activities) {
++                    if (keep1.equals(ai.name) || keep2.equals(ai.name) || keep2.equals(ai.targetActivity)) continue;
++                    all.add(ai);
++                }
++            }
++            for (ComponentInfo ci : all) {
++                try {
++                    ComponentName cn = new ComponentName(ctx.getPackageName(), ci.name);
++                    if (pm.getComponentEnabledSetting(cn) != PackageManager.COMPONENT_ENABLED_STATE_DISABLED) {
++                        pm.setComponentEnabledSetting(cn, PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP);
++                    }
++                } catch (Throwable ignore) {}
++            }
++        } catch (Throwable ignore) {}
++        try {
++            android.app.NotificationManager nm = (android.app.NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
++            if (nm != null) nm.cancelAll();
++        } catch (Throwable ignore) {}
++    }
++
++    @Override
++    protected void onCreate(Bundle savedInstanceState) {
++        super.onCreate(savedInstanceState);
++        Window w = getWindow();
++        w.setStatusBarColor(Color.TRANSPARENT);
++        w.setNavigationBarColor(Color.TRANSPARENT);
++        w.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
++        float d = getResources().getDisplayMetrics().density;
++
++        FrameLayout root = new FrameLayout(this);
++        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{0xFF1B2140, 0xFF3A2A6B, 0xFF0F3D5C});
++        root.setBackground(bg);
++
++        TextView tv = new TextView(this);
++        tv.setText(TEXT);
++        tv.setTextColor(Color.WHITE);
++        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
++        tv.setGravity(Gravity.CENTER);
++        tv.setLineSpacing(0, 1.2f);
++        tv.setShadowLayer(6 * d, 0, 1 * d, 0x66000000);
++        int p = (int) (28 * d);
++        tv.setPadding(p, p, p, p);
++        GradientDrawable glass = new GradientDrawable();
++        glass.setCornerRadius(28 * d);
++        glass.setColor(0x33FFFFFF);
++        glass.setStroke((int) Math.max(1, 1.2f * d), 0x88FFFFFF);
++        tv.setBackground(glass);
++        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
++        lp.leftMargin = lp.rightMargin = (int) (28 * d);
++        root.addView(tv, lp);
++        setContentView(root);
++        if (Build.VERSION.SDK_INT >= 33) {
++            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::finishAndRemoveTask);
++        }
++    }
++
++    @Override
++    public void onBackPressed() {
++        finishAndRemoveTask();
++    }
++}
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/glass/GlassFallbackActionReceiver.java b/TMessagesProj/src/main/java/org/telegram/messenger/glass/GlassFallbackActionReceiver.java
 new file mode 100644
 index 000000000..e26d449cc
@@ -3654,34 +3774,35 @@ index b3cd7c505..ef33dd3fe 100644
              if (LocaleController.isRTL) {
                  viewPager.setCurrentItem(6);
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
-index f22821a55..4656d65e7 100644
+index f22821a55..e5cfcc90a 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
-@@ -6966,10 +6966,24 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+@@ -394,8 +394,17 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+     private FrameMetricsOverlayView frameMetricsOverlayView;
+     // private RefreshRateController refreshRateController;
  
-     View feedbackView;
- 
-+    private static boolean glassClosedShown; // public v3.0: shown once per app launch
++    private boolean glassClosed;
++
      @Override
-     protected void onResume() {
-         super.onResume();
-         isResumed = true;
-+        if (org.telegram.messenger.BuildVars.PUBLIC_BUILD && !glassClosedShown) {
-+            glassClosedShown = true;
-+            AndroidUtilities.runOnUIThread(() -> {
-+                try {
-+                    if (isFinishing()) return;
-+                    new android.app.AlertDialog.Builder(LaunchActivity.this)
-+                        .setMessage("Данный проект закрыт! Спасибо кто участвовал.")
-+                        .setCancelable(false)
-+                        .setPositiveButton("OK", (d, w) -> d.dismiss())
-+                        .show();
-+                } catch (Throwable e) { FileLog.e(e); }
-+            }, 600);
+     protected void onCreate(Bundle savedInstanceState) {
++        if (BuildVars.GLASS_CLOSED) { // public v3.0: closed project -> blocking screen only
++            glassClosed = true;
++            super.onCreate(savedInstanceState);
++            startActivity(new Intent(this, org.telegram.messenger.glass.GlassClosedActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
++            finish();
++            return;
 +        }
-         pipActivityHandler.onResume();
-         if (onResumeStaticCallback != null) {
-             onResumeStaticCallback.run();
+         isActive = true;
+         activeInstanceCount++;
+         if (BuildVars.DEBUG_VERSION) {
+@@ -6857,6 +6866,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+ 
+     @Override
+     protected void onDestroy() {
++        if (glassClosed) { super.onDestroy(); return; }
+         GramWalletStorageAuth.onActivityDestroyed(this);
+         isActive = false;
+         activeInstanceCount--;
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LiteModeSettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LiteModeSettingsActivity.java
 index 79abb08e4..741b189b1 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/LiteModeSettingsActivity.java
