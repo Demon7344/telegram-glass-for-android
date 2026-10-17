@@ -10,6 +10,13 @@
 
 ## 🇷🇺 Русский
 
+### Что нового в v3.0
+- **Основа обновлена до Telegram 13.0.2** — все функции Glass перенесены на новую версию.
+- **🪩 Дискотека при музыке** (переключатель в Настройках, включён по умолчанию): пока играет музыка, пузыри сообщений и фон профилей плавно меняют цвет (розовый → фиолетовый → синий → голубой → зелёный → жёлтый → оранжевый), стеклянные панели становятся радужными матовыми, по чату скользят белые блики от зеркального шара. Когда музыка останавливается, всё плавно возвращается.
+- **Диско-шары на главном экране**: во время музыки листья плавно исчезают, а вместо них падают зеркальные диско-шары (с теми же настройками размера, скорости и количества).
+- **Текст остаётся читаемым** во время дискотеки: шапка, плеер, закреп и поле ввода получают плотное матовое стекло.
+- **Чаты с ботами**: кнопка «Меню» больше не наезжает на кнопку записи — в чатах с ботами запись голосовых/видео убрана, кнопка «Меню» стоит внутри стеклянной панели.
+
 ### Что нового в v2.2
 - **Перевод работает**: сервер Telegram отключает перевод для приложений со своим api_id — теперь в этом случае используется встроенный переводчик. «Перевести» в меню сообщения включено по умолчанию; у Premium есть панель «Перевести весь чат/канал».
 
@@ -51,7 +58,7 @@
 | Вход через Google, passkeys, покупки Google Play | да | **нет** |
 
 ### Установка и настройка — по шагам
-1. **Скачайте APK** со страницы [Releases](../../releases) (`telegram-glass-v2.2.apk`).
+1. **Скачайте APK** со страницы [Releases](../../releases) (`telegram-glass-v3.0.apk`).
 2. **Разрешите установку из неизвестных источников**: при открытии APK Android предложит разрешить установку для браузера/файлового менеджера → «Настройки» → включить «Разрешить из этого источника».
 3. **Play Protect** может показать предупреждение «Приложение не проверено» — нажмите «Подробнее» → «Всё равно установить». Это нормально для неофициальных сборок.
 4. **Получите api_id и api_hash**:
@@ -86,6 +93,13 @@
 
 ## 🇬🇧 English
 
+### What's new in v3.0
+- **Based on Telegram 13.0.2** — all Glass features ported to the new upstream version.
+- **🪩 Disco while music plays** (Settings toggle, on by default): message bubbles and profile backgrounds smoothly cycle through one colour at a time (pink → purple → blue → cyan → green → yellow → orange), glass panels turn into iridescent frosted glass, and white mirror-ball light spots sweep across the chat. Everything fades back when the music stops.
+- **Disco balls on the main screen**: during music the leaves fade out and mirror disco balls fall instead (same size/speed/amount settings).
+- **Text stays readable** during disco: the header, player bar, pinned bar and input bar get dense frosted glass.
+- **Bot chats**: the bot "Menu" button no longer overlaps the record button — voice/video recording is removed in bot chats and the Menu button sits inside the glass bar.
+
 ### What's new in v2.2
 - **Translation works**: Telegram's server disables translation for apps with their own api_id — the built‑in translator is now used in that case. "Translate" in the message menu is on by default; Premium users get the "Translate entire chat/channel" bar.
 
@@ -118,7 +132,7 @@
 - "Liquid glass" toggle in Settings → Power saving.
 
 ### Install & setup, step by step
-1. Download `telegram-glass-v2.2.apk` from [Releases](../../releases).
+1. Download `telegram-glass-v3.0.apk` from [Releases](../../releases).
 2. Allow installing from unknown sources for your browser / file manager when prompted.
 3. If Play Protect warns, tap "More details" → "Install anyway".
 4. Get api_id / api_hash: open https://my.telegram.org/apps, log in with your phone (the code arrives in Telegram), open "API development tools", fill in any app title, a 5–32 char short name, platform Android, press "Create application", copy **App api_id** and **App api_hash**.
@@ -142,11 +156,11 @@
 
 ## License / Source
 Based on [Telegram for Android](https://github.com/DrKLO/Telegram) (GNU GPL v2). The complete source changes are in
-[`telegram-glass-v2.2.patch`](telegram-glass-v2.2.patch), applied on top of upstream commit `f2908b1` ("update to 12.10.6 (7112)"):
+[`telegram-glass-v3.0.patch`](telegram-glass-v3.0.patch), applied on top of upstream commit `f32ffeec7` ("update to 13.0.2 (7175)"):
 
 ```
-git clone https://github.com/DrKLO/Telegram && cd Telegram && git checkout f2908b1
-git apply ../telegram-glass-v2.2.patch
+git clone https://github.com/DrKLO/Telegram && cd Telegram && git checkout f32ffeec7
+git apply ../telegram-glass-v3.0.patch
 ./gradlew :TMessagesProj_App:assembleAfatRelease
 ```
 No api credentials are included; users supply their own. This project is not affiliated with Telegram FZ‑LLC.
